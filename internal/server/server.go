@@ -21,11 +21,12 @@ type Server struct {
 func New(cfg config.Config, handler http.Handler) *Server {
 	return &Server{
 		httpServer: &http.Server{
-			Addr:         cfg.HTTPAddr,
-			Handler:      handler,
-			ReadTimeout:  15 * time.Second,
-			WriteTimeout: 15 * time.Second,
-			IdleTimeout:  60 * time.Second,
+			Addr:              cfg.HTTPAddr,
+			Handler:           handler,
+			ReadTimeout:       5 * time.Minute,
+			ReadHeaderTimeout: 15 * time.Second,
+			WriteTimeout:      30 * time.Minute,
+			IdleTimeout:       120 * time.Second,
 		},
 	}
 }

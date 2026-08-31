@@ -3,8 +3,6 @@ set -euo pipefail
 
 # First-time VPS bootstrap. Run as root on the server:
 #   sudo bash deploy/install.sh
-# or after copying this directory:
-#   sudo bash /tmp/aura-deploy/install.sh
 
 if [[ "${EUID}" -ne 0 ]]; then
 	echo "Run this script as root (sudo bash deploy/install.sh)" >&2
@@ -15,10 +13,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DOMAIN="${DOMAIN:-api.aurameds.ru}"
 APP_USER="${APP_USER:-aura}"
 APP_DIR="${APP_DIR:-/opt/aura-server}"
-GO_VERSION="${GO_VERSION:-1.26.5}"
 
 if [[ ! -f /etc/os-release ]] || ! grep -qiE 'debian|ubuntu' /etc/os-release; then
-	echo "This installer targets Debian/Ubuntu. Install nginx, Go, and certbot manually." >&2
+	echo "This installer targets Debian/Ubuntu." >&2
 	exit 1
 fi
 
@@ -26,47 +23,39 @@ echo "==> Installing packages"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
 apt-get install -y --no-install-recommends \
-	ca-certificates curl rsync nginx certbot python3-certbot-nginx ufw
+	ca-certificates curl rsync nginx certbot python3-certbot-nginx ufw docker.io
+apt-get install -y docker-compose-v2 || apt-get install -y docker-compose-plugin || apt-get install -y docker-compose || true
+systemctl enable --now docker
 
-install_go() {
-	local goarch
-	case "$(uname -m)" in
-		x86_64) goarch=amd64 ;;
-		aarch64 | arm64) goarch=arm64 ;;
+if ! docker compose version >/dev/null 2>&1; then
+	echo "==> Installing Docker Compose plugin from GitHub"
+	arch="$(uname -m)"
+	case "${arch}" in
+		x86_64) compose_arch=x86_64 ;;
+		aarch64 | arm64) compose_arch=aarch64 ;;
 		*)
-			echo "Unsupported architecture: $(uname -m)" >&2
+			echo "Unsupported architecture for Compose: ${arch}" >&2
 			exit 1
 			;;
 	esac
-
-	local archive="go${GO_VERSION}.linux-${goarch}.tar.gz"
-	echo "==> Installing Go ${GO_VERSION} (${goarch})"
-	curl -fsSL "https://go.dev/dl/${archive}" -o "/tmp/${archive}"
-	rm -rf /usr/local/go
-	tar -C /usr/local -xzf "/tmp/${archive}"
-	rm -f "/tmp/${archive}"
-	ln -sfn /usr/local/go/bin/go /usr/local/bin/go
-	ln -sfn /usr/local/go/bin/gofmt /usr/local/bin/gofmt
-}
-
-need_go=1
-go_bin="/usr/local/go/bin/go"
-if [[ -x "${go_bin}" ]]; then
-	installed="$("${go_bin}" env GOVERSION 2>/dev/null || true)"
-	if [[ "${installed}" == "go${GO_VERSION}" ]]; then
-		need_go=0
-	fi
+	mkdir -p /usr/libexec/docker/cli-plugins /usr/local/lib/docker/cli-plugins
+	curl -fsSL "https://github.com/docker/compose/releases/download/v2.32.4/docker-compose-linux-${compose_arch}" \
+		-o /usr/libexec/docker/cli-plugins/docker-compose
+	chmod +x /usr/libexec/docker/cli-plugins/docker-compose
+	ln -sfn /usr/libexec/docker/cli-plugins/docker-compose /usr/local/lib/docker/cli-plugins/docker-compose
 fi
-if [[ "${need_go}" -eq 1 ]]; then
-	install_go
+
+if ! docker compose version >/dev/null 2>&1; then
+	echo "docker compose is not available after install." >&2
+	exit 1
 fi
-echo "    $(/usr/local/go/bin/go version)"
+echo "    $(docker compose version)"
 
 echo "==> Creating ${APP_USER} user and ${APP_DIR}"
 if ! id -u "${APP_USER}" >/dev/null 2>&1; then
 	useradd --system --home "${APP_DIR}" --shell /usr/sbin/nologin "${APP_USER}"
 fi
-mkdir -p "${APP_DIR}/bin"
+mkdir -p "${APP_DIR}"
 if [[ ! -f "${APP_DIR}/.env" ]]; then
 	cp "${SCRIPT_DIR}/env.example" "${APP_DIR}/.env"
 fi
@@ -103,7 +92,7 @@ echo
 echo "Bootstrap complete."
 echo
 echo "Next, from your laptop:"
-echo "  cp deploy/deploy.env.example deploy.env   # if you have not already"
+echo "  cp deploy/deploy.env.example deploy.env"
 echo "  ./scripts/deploy.sh"
 echo
 echo "Then issue TLS on this server:"

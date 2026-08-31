@@ -58,8 +58,15 @@ fi
 echo "==> Ensuring the server is bootstrapped"
 ssh "${REMOTE}" bash -s <<EOF
 set -euo pipefail
-if ! systemctl cat "${DEPLOY_SERVICE}" >/dev/null 2>&1; then
-	echo "First-time setup: running ${DEPLOY_DIR}/deploy/install.sh"
+need_install=0
+if ! command -v docker >/dev/null 2>&1; then
+	need_install=1
+fi
+if ! docker compose version >/dev/null 2>&1 && ! command -v docker-compose >/dev/null 2>&1; then
+	need_install=1
+fi
+if [[ "\${need_install}" -eq 1 ]]; then
+	echo "Installing Docker, nginx, and systemd unit"
 	${remote_sudo}bash "${DEPLOY_DIR}/deploy/install.sh"
 fi
 EOF

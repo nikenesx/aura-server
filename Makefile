@@ -1,4 +1,4 @@
-.PHONY: run build test lint deploy
+.PHONY: run build test lint deploy up down
 
 run:
 	go run ./cmd/api
@@ -11,6 +11,12 @@ test:
 
 lint:
 	golangci-lint run
+
+up:
+	docker compose up --build
+
+down:
+	docker compose down
 
 deploy:
 	./scripts/deploy.sh
