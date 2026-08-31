@@ -1,0 +1,22 @@
+[Unit]
+Description=Aura API server
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=aura
+Group=aura
+WorkingDirectory=/opt/aura-server
+EnvironmentFile=/opt/aura-server/.env
+ExecStart=/opt/aura-server/bin/api
+Restart=on-failure
+RestartSec=3
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

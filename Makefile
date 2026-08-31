@@ -1,4 +1,4 @@
-.PHONY: run build test lint
+.PHONY: run build test lint deploy
 
 run:
 	go run ./cmd/api
@@ -11,3 +11,6 @@ test:
 
 lint:
 	golangci-lint run
+
+deploy:
+	./scripts/deploy.sh
