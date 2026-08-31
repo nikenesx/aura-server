@@ -5,9 +5,10 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/nikenesx/aura-server/internal/health"
+	"github.com/nikenesx/aura-server/internal/transcribe"
 )
 
-func NewRouter(healthHandler *health.Handler) http.Handler {
+func NewRouter(healthHandler *health.Handler, transcribeHandler *transcribe.Handler) http.Handler {
 	r := chi.NewRouter()
 
 	for _, mw := range middlewareStack() {
@@ -15,6 +16,7 @@ func NewRouter(healthHandler *health.Handler) http.Handler {
 	}
 
 	r.Get("/health", healthHandler.ServeHTTP)
+	r.Post("/v1/transcribe", transcribeHandler.Create)
 
 	return r
 }
