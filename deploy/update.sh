@@ -42,7 +42,13 @@ if [[ -f deploy/aura-server.service ]]; then
 fi
 
 echo "==> docker compose build"
-compose build
+export COMPOSE_BAKE=false
+export DOCKER_BUILDKIT=0
+# Prefer local base images. Anonymous Docker Hub HEAD checks return 429.
+if ! compose build --pull never; then
+	echo "retrying without --pull never"
+	compose build
+fi
 
 if systemctl cat "${SERVICE}" >/dev/null 2>&1; then
 	echo "==> systemctl restart ${SERVICE}"

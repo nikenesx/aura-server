@@ -7,8 +7,12 @@ import threading
 from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 
+import onnxruntime as ort
 from fastapi import FastAPI, HTTPException, Request
-from tone import StreamingCTCPipeline
+from tone import DecoderType, StreamingCTCPipeline
+from tone.decoder import GreedyCTCDecoder
+from tone.logprob_splitter import StreamingLogprobSplitter
+from tone.onnx_wrapper import StreamingCTCModel
 from tone.pipeline import TextPhrase
 
 from audio import to_tone_pcm
@@ -24,14 +28,43 @@ load_error: str | None = None
 process_lock = threading.Lock()
 
 
+def _thread_count() -> int:
+    raw = os.getenv("ORT_INTRA_OP_NUM_THREADS")
+    if raw:
+        return max(1, int(raw))
+    return max(1, os.cpu_count() or 4)
+
+
 def load_pipeline() -> StreamingCTCPipeline:
-    folder = os.getenv("LOAD_FROM_FOLDER", "/models")
-    model = Path(folder) / "model.onnx"
-    if model.is_file():
-        logger.info("loading T-one from %s", folder)
-        return StreamingCTCPipeline.from_local(folder)
-    logger.info("loading T-one from Hugging Face")
-    return StreamingCTCPipeline.from_hugging_face()
+    decoder_name = os.getenv("ASR_DECODER", "greedy").strip().lower()
+    threads = _thread_count()
+    os.environ.setdefault("OMP_NUM_THREADS", str(threads))
+    os.environ.setdefault("MKL_NUM_THREADS", str(threads))
+
+    folder = Path(os.getenv("LOAD_FROM_FOLDER", "/models"))
+    model_path = folder / "model.onnx"
+    logger.info("loading T-one decoder=%s ort_threads=%s", decoder_name, threads)
+
+    if model_path.is_file() and decoder_name == "greedy":
+        opts = ort.SessionOptions()
+        opts.intra_op_num_threads = threads
+        opts.inter_op_num_threads = 1
+        opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        sess = ort.InferenceSession(
+            str(model_path),
+            sess_options=opts,
+            providers=["CPUExecutionProvider"],
+        )
+        return StreamingCTCPipeline(
+            StreamingCTCModel(sess),
+            StreamingLogprobSplitter(),
+            GreedyCTCDecoder(),
+        )
+
+    decoder_type = DecoderType.GREEDY if decoder_name == "greedy" else DecoderType.BEAM_SEARCH
+    if model_path.is_file():
+        return StreamingCTCPipeline.from_local(folder, decoder_type=decoder_type)
+    return StreamingCTCPipeline.from_hugging_face(decoder_type=decoder_type)
 
 
 def _load() -> None:

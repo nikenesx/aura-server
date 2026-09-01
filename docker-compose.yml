@@ -3,14 +3,21 @@ services:
     build:
       context: .
       dockerfile: asr/Dockerfile
+      pull: false
     restart: unless-stopped
     expose:
       - "8090"
+    environment:
+      ASR_DECODER: ${ASR_DECODER:-greedy}
+      ORT_INTRA_OP_NUM_THREADS: ${ORT_INTRA_OP_NUM_THREADS:-8}
+      OMP_NUM_THREADS: ${ORT_INTRA_OP_NUM_THREADS:-8}
+      MKL_NUM_THREADS: ${ORT_INTRA_OP_NUM_THREADS:-8}
 
   api:
     build:
       context: .
       dockerfile: Dockerfile
+      pull: false
     restart: unless-stopped
     ports:
       - "127.0.0.1:8080:8080"
