@@ -15,7 +15,8 @@ from tone.logprob_splitter import StreamingLogprobSplitter
 from tone.onnx_wrapper import StreamingCTCModel
 from tone.pipeline import TextPhrase
 
-from audio import agc_filter, to_tone_pcm
+from audio import agc_filter, prepare_audio
+from diarize import DiarConfig, SpeakerDiarizer
 from vad import SAMPLE_RATE, SileroVAD, VADConfig, pad_for_tone, speech_segments
 
 logging.basicConfig(
@@ -26,7 +27,9 @@ logger = logging.getLogger("aura-asr")
 
 pipeline: StreamingCTCPipeline | None = None
 vad_model: SileroVAD | None = None
+diarizer: SpeakerDiarizer | None = None
 vad_cfg = VADConfig.from_env()
+diar_cfg = DiarConfig.from_env()
 load_error: str | None = None
 process_lock = threading.Lock()
 
@@ -71,7 +74,7 @@ def load_pipeline() -> StreamingCTCPipeline:
 
 
 def _load() -> None:
-    global pipeline, vad_model, load_error
+    global pipeline, vad_model, diarizer, load_error
     if vad_cfg.enabled:
         try:
             vad_model = SileroVAD(vad_cfg.model_path)
@@ -93,6 +96,16 @@ def _load() -> None:
         logger.info("AGC enabled filter=%s", filt)
     else:
         logger.info("AGC disabled")
+
+    if diar_cfg.enabled:
+        try:
+            diarizer = SpeakerDiarizer(diar_cfg)
+            logger.info("diarization ready speakers=%d emb=%s", diar_cfg.num_speakers, diar_cfg.emb_model)
+        except Exception:
+            diarizer = None
+            logger.exception("failed to load diarization, phrases will have no speaker")
+    else:
+        logger.info("diarization disabled")
 
     try:
         pipeline = load_pipeline()
@@ -123,7 +136,7 @@ def result_from_items(items: list[dict]) -> dict:
     return {"text": " ".join(item["text"] for item in items), "phrases": items}
 
 
-def transcribe_pcm(audio) -> dict:
+def transcribe_pcm(audio, diar_wav=None, raw_wav=None) -> dict:
     total = len(audio)
     segments: list[tuple[int, int]]
     if vad_cfg.enabled and vad_model is not None and total > 0:
@@ -149,6 +162,19 @@ def transcribe_pcm(audio) -> dict:
             raise RuntimeError("model not loaded")
         phrases = pipeline.forward_offline(chunk)
         items.extend(phrases_to_result(phrases, start / SAMPLE_RATE))
+
+    if diarizer is not None and diar_wav is not None and items:
+        try:
+            diarizer.label_phrases(items, diar_wav, raw_wav if raw_wav is not None else diar_wav)
+            speakers = {item.get("speaker") for item in items}
+            logger.info(
+                "diarization labeled %d phrase(s) speakers=%s",
+                len(items),
+                ",".join(sorted(s for s in speakers if s)),
+            )
+        except Exception:
+            logger.exception("diarization failed")
+
     return result_from_items(items)
 
 
@@ -199,8 +225,8 @@ async def transcribe(request: Request):
     try:
         with temp_upload(suffix) as src:
             src.write_bytes(contents)
-            audio = to_tone_pcm(src)
-            return transcribe_pcm(audio)
+            prepared = prepare_audio(src)
+            return transcribe_pcm(prepared.tone, prepared.diar, prepared.raw)
     except HTTPException:
         raise
     except Exception as exc:

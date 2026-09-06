@@ -20,6 +20,9 @@ services:
       VAD_PAD_MS: ${VAD_PAD_MS:-300}
       AGC_ENABLED: ${AGC_ENABLED:-true}
       AGC_FILTER: ${AGC_FILTER:-}
+      DIAR_ENABLED: ${DIAR_ENABLED:-true}
+      DIAR_SPEAKERS: ${DIAR_SPEAKERS:-2}
+      DIAR_EMB_MODEL: /models/speaker_embedding.onnx
 
   api:
     build:

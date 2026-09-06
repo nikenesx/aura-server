@@ -14,13 +14,15 @@ curl -fsS -F file=@recording.wav https://api.aurameds.ru/v1/transcribe
 {
   "text": "привет это я",
   "phrases": [
-    {"text": "привет", "start": 1.79, "end": 2.04},
-    {"text": "это я", "start": 3.72, "end": 4.26}
+    {"text": "привет", "start": 1.79, "end": 2.04, "speaker": "doctor"},
+    {"text": "это я", "start": 3.72, "end": 4.26, "speaker": "patient"}
   ]
 }
 ```
 
 `POST /v1/transcribe` is synchronous: send audio (`wav`, `mp3`, `m4a`, `ogg`, `flac`, …) as multipart field `file` and wait for the JSON body. Limit is 100 MB. Without the ASR container the endpoint returns `503`.
+
+Each phrase has `speaker`: `doctor` (louder, closer to the microphone) or `patient`. After T-one finishes, a speaker embedding is taken per phrase and clustered into two voices.
 
 ## Configuration
 
@@ -39,6 +41,8 @@ Server env lives in `/opt/aura-server/.env` (created from `deploy/env.example` o
 | `VAD_MIN_SILENCE_MS`| `400`                  | Silence needed to split segments    |
 | `VAD_PAD_MS`       | `300`                   | Extra audio kept around speech      |
 | `AGC_ENABLED`      | `true`                  | Boost quiet speech before T-one     |
+| `DIAR_ENABLED`     | `true`                  | Label phrases as doctor / patient   |
+| `DIAR_SPEAKERS`    | `2`                     | Expected number of speakers         |
 
 ## Production (VPS + nginx)
 

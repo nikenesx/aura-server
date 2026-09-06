@@ -11,9 +11,10 @@ import (
 )
 
 type Phrase struct {
-	Text  string  `json:"text"`
-	Start float64 `json:"start"`
-	End   float64 `json:"end"`
+	Text    string  `json:"text"`
+	Start   float64 `json:"start"`
+	End     float64 `json:"end"`
+	Speaker string  `json:"speaker,omitempty"`
 }
 
 type Result struct {
