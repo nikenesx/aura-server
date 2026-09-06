@@ -18,6 +18,8 @@ services:
       VAD_MIN_SPEECH_MS: ${VAD_MIN_SPEECH_MS:-300}
       VAD_MIN_SILENCE_MS: ${VAD_MIN_SILENCE_MS:-400}
       VAD_PAD_MS: ${VAD_PAD_MS:-300}
+      AGC_ENABLED: ${AGC_ENABLED:-true}
+      AGC_FILTER: ${AGC_FILTER:-}
 
   api:
     build:

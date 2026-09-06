@@ -38,6 +38,7 @@ Server env lives in `/opt/aura-server/.env` (created from `deploy/env.example` o
 | `VAD_MIN_SPEECH_MS`| `300`                   | Drop speech shorter than this       |
 | `VAD_MIN_SILENCE_MS`| `400`                  | Silence needed to split segments    |
 | `VAD_PAD_MS`       | `300`                   | Extra audio kept around speech      |
+| `AGC_ENABLED`      | `true`                  | Boost quiet speech before T-one     |
 
 ## Production (VPS + nginx)
 

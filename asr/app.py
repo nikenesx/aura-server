@@ -15,7 +15,7 @@ from tone.logprob_splitter import StreamingLogprobSplitter
 from tone.onnx_wrapper import StreamingCTCModel
 from tone.pipeline import TextPhrase
 
-from audio import to_tone_pcm
+from audio import agc_filter, to_tone_pcm
 from vad import SAMPLE_RATE, SileroVAD, VADConfig, pad_for_tone, speech_segments
 
 logging.basicConfig(
@@ -87,6 +87,12 @@ def _load() -> None:
             logger.exception("failed to load Silero VAD, transcribing full audio")
     else:
         logger.info("Silero VAD disabled")
+
+    filt = agc_filter()
+    if filt:
+        logger.info("AGC enabled filter=%s", filt)
+    else:
+        logger.info("AGC disabled")
 
     try:
         pipeline = load_pipeline()

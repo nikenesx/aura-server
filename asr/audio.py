@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import tempfile
 import wave
@@ -7,6 +8,22 @@ from pathlib import Path
 
 import numpy as np
 import numpy.typing as npt
+
+# High-pass rumble, then even out doctor vs distant patient before 8 kHz.
+# dynaudnorm boosts quiet frames without clipping loud ones; alimiter is a safety cap.
+DEFAULT_AGC_FILTER = (
+    "highpass=f=80,"
+    "dynaudnorm=f=250:g=11:p=0.95:m=20:s=8:r=0.1:b=1:t=0.002,"
+    "alimiter=limit=0.95"
+)
+
+
+def agc_filter() -> str | None:
+    raw = os.getenv("AGC_ENABLED", "true")
+    if raw.strip().lower() in {"0", "false", "no", "off"}:
+        return None
+    custom = os.getenv("AGC_FILTER", "").strip()
+    return custom or DEFAULT_AGC_FILTER
 
 
 def to_tone_pcm(src: Path) -> npt.NDArray[np.int32]:
@@ -22,14 +39,21 @@ def to_tone_pcm(src: Path) -> npt.NDArray[np.int32]:
             "-i",
             str(src),
             "-vn",
-            "-ac",
-            "1",
-            "-ar",
-            "8000",
-            "-c:a",
-            "pcm_s16le",
-            str(dst),
         ]
+        filt = agc_filter()
+        if filt:
+            cmd.extend(["-af", filt])
+        cmd.extend(
+            [
+                "-ac",
+                "1",
+                "-ar",
+                "8000",
+                "-c:a",
+                "pcm_s16le",
+                str(dst),
+            ]
+        )
         proc = subprocess.run(cmd, check=False, capture_output=True, text=True)
         if proc.returncode != 0:
             err = (proc.stderr or proc.stdout or "ffmpeg failed").strip()
