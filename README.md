@@ -50,6 +50,11 @@ curl -fsS -F file=@recording.wav http://127.0.0.1:8080/v1/transcribe
 | `ASR_URL`          | `http://127.0.0.1:8090` | T-one service URL                   |
 | `MAX_UPLOAD_BYTES` | `104857600`             | Upload size limit                   |
 | `ASR_TIMEOUT`      | `30m`                   | Transcription timeout               |
+| `VAD_ENABLED`      | `true`                  | Skip silence with Silero VAD        |
+| `VAD_THRESHOLD`    | `0.5`                   | Speech probability cutoff (0–1)     |
+| `VAD_MIN_SPEECH_MS`| `300`                   | Drop speech shorter than this       |
+| `VAD_MIN_SILENCE_MS`| `400`                  | Silence needed to split segments    |
+| `VAD_PAD_MS`       | `300`                   | Extra audio kept around speech      |
 
 ## Commands
 

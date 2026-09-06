@@ -16,6 +16,7 @@ from tone.onnx_wrapper import StreamingCTCModel
 from tone.pipeline import TextPhrase
 
 from audio import to_tone_pcm
+from vad import SAMPLE_RATE, SileroVAD, VADConfig, pad_for_tone, speech_segments
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "info").upper(),
@@ -24,6 +25,8 @@ logging.basicConfig(
 logger = logging.getLogger("aura-asr")
 
 pipeline: StreamingCTCPipeline | None = None
+vad_model: SileroVAD | None = None
+vad_cfg = VADConfig.from_env()
 load_error: str | None = None
 process_lock = threading.Lock()
 
@@ -68,7 +71,23 @@ def load_pipeline() -> StreamingCTCPipeline:
 
 
 def _load() -> None:
-    global pipeline, load_error
+    global pipeline, vad_model, load_error
+    if vad_cfg.enabled:
+        try:
+            vad_model = SileroVAD(vad_cfg.model_path)
+            logger.info(
+                "Silero VAD ready threshold=%.2f min_speech=%dms min_silence=%dms pad=%dms",
+                vad_cfg.threshold,
+                vad_cfg.min_speech_ms,
+                vad_cfg.min_silence_ms,
+                vad_cfg.pad_ms,
+            )
+        except Exception:
+            vad_model = None
+            logger.exception("failed to load Silero VAD, transcribing full audio")
+    else:
+        logger.info("Silero VAD disabled")
+
     try:
         pipeline = load_pipeline()
         load_error = None
@@ -78,9 +97,8 @@ def _load() -> None:
         logger.exception("failed to load T-one")
 
 
-def phrases_to_result(phrases: list[TextPhrase]) -> dict:
+def phrases_to_result(phrases: list[TextPhrase], offset: float = 0.0) -> list[dict]:
     items = []
-    parts: list[str] = []
     for phrase in phrases:
         text = (phrase.text or "").strip()
         if not text:
@@ -88,12 +106,44 @@ def phrases_to_result(phrases: list[TextPhrase]) -> dict:
         items.append(
             {
                 "text": text,
-                "start": round(float(phrase.start_time), 3),
-                "end": round(float(phrase.end_time), 3),
+                "start": round(float(phrase.start_time) + offset, 3),
+                "end": round(float(phrase.end_time) + offset, 3),
             }
         )
-        parts.append(text)
-    return {"text": " ".join(parts), "phrases": items}
+    return items
+
+
+def result_from_items(items: list[dict]) -> dict:
+    return {"text": " ".join(item["text"] for item in items), "phrases": items}
+
+
+def transcribe_pcm(audio) -> dict:
+    total = len(audio)
+    segments: list[tuple[int, int]]
+    if vad_cfg.enabled and vad_model is not None and total > 0:
+        segments = speech_segments(audio, vad_model, vad_cfg)
+        if not segments:
+            logger.info("VAD found no speech in %.1fs, using full audio", total / SAMPLE_RATE)
+            segments = [(0, total)]
+    else:
+        segments = [(0, total)]
+
+    kept = sum(end - start for start, end in segments)
+    logger.info(
+        "VAD kept %.1fs / %.1fs in %d segment(s)",
+        kept / SAMPLE_RATE,
+        total / SAMPLE_RATE,
+        len(segments),
+    )
+
+    items: list[dict] = []
+    for start, end in segments:
+        chunk = pad_for_tone(audio[start:end])
+        if pipeline is None:
+            raise RuntimeError("model not loaded")
+        phrases = pipeline.forward_offline(chunk)
+        items.extend(phrases_to_result(phrases, start / SAMPLE_RATE))
+    return result_from_items(items)
 
 
 @contextmanager
@@ -144,8 +194,7 @@ async def transcribe(request: Request):
         with temp_upload(suffix) as src:
             src.write_bytes(contents)
             audio = to_tone_pcm(src)
-            phrases = pipeline.forward_offline(audio)
-            return phrases_to_result(phrases)
+            return transcribe_pcm(audio)
     except HTTPException:
         raise
     except Exception as exc:

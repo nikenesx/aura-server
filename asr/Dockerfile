@@ -6,7 +6,8 @@ RUN apt-get update \
 	&& rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY asr/app.py asr/audio.py /app/
+COPY asr/app.py asr/audio.py asr/vad.py /app/
+COPY asr/models/silero_vad.onnx /models/silero_vad.onnx
 
 USER python
 EXPOSE 8090
