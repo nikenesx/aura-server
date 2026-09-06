@@ -1,30 +1,32 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Runs on the VPS after sources have been synced. Builds the binary and
-# restarts systemd. Invoked by scripts/deploy.sh; can also be run by hand:
+# Rebuild Docker images on the VPS and restart compose.
 #   sudo bash /opt/aura-server/deploy/update.sh
 
 APP_DIR="${APP_DIR:-/opt/aura-server}"
 APP_USER="${APP_USER:-aura}"
 SERVICE="${DEPLOY_SERVICE:-aura-server}"
 
-export PATH="/usr/local/go/bin:/usr/local/bin:${PATH}"
+cd "${APP_DIR}"
 
-if ! command -v go >/dev/null 2>&1; then
-	echo "Go is not installed. Run deploy/install.sh first." >&2
+compose() {
+	if docker compose version >/dev/null 2>&1; then
+		docker compose "$@"
+	elif command -v docker-compose >/dev/null 2>&1; then
+		docker-compose "$@"
+	else
+		echo "Docker Compose is not installed. Installing..." >&2
+		bash "${APP_DIR}/deploy/install.sh"
+		docker compose "$@"
+	fi
+}
+
+if [[ ! -f docker-compose.yml ]]; then
+	echo "docker-compose.yml is missing in ${APP_DIR}" >&2
 	exit 1
 fi
 
-cd "${APP_DIR}"
-mkdir -p bin
-
-echo "==> go build"
-CGO_ENABLED=0 go build -trimpath -o bin/api ./cmd/api
-if id -u "${APP_USER}" >/dev/null 2>&1; then
-	chown "root:${APP_USER}" bin/api
-fi
-chmod 755 bin/api
 if [[ -f .env ]]; then
 	chmod 640 .env
 	if id -u "${APP_USER}" >/dev/null 2>&1; then
@@ -32,27 +34,44 @@ if [[ -f .env ]]; then
 	fi
 fi
 
-if ! systemctl cat "${SERVICE}" >/dev/null 2>&1; then
-	echo "systemd unit ${SERVICE} is missing. Run deploy/install.sh first." >&2
-	exit 1
+if [[ -f deploy/aura-server.service ]]; then
+	echo "==> Refreshing systemd unit"
+	cp deploy/aura-server.service /etc/systemd/system/aura-server.service
+	systemctl daemon-reload
+	systemctl enable aura-server
 fi
 
-echo "==> systemctl restart ${SERVICE}"
-systemctl restart "${SERVICE}"
-systemctl --no-pager --full status "${SERVICE}" | sed -n '1,18p'
+echo "==> docker compose build"
+export COMPOSE_BAKE=false
+export DOCKER_BUILDKIT=0
+# Prefer local base images. Anonymous Docker Hub HEAD checks return 429.
+if ! compose build --pull never; then
+	echo "retrying without --pull never"
+	compose build
+fi
+
+if systemctl cat "${SERVICE}" >/dev/null 2>&1; then
+	echo "==> systemctl restart ${SERVICE}"
+	systemctl daemon-reload
+	systemctl restart "${SERVICE}"
+else
+	echo "==> docker compose up"
+	compose up -d --remove-orphans
+fi
 
 echo "==> Health check on 127.0.0.1:8080"
 ok=0
-for _ in 1 2 3 4 5 6 7 8; do
+for _ in $(seq 1 60); do
 	if curl -fsS http://127.0.0.1:8080/health; then
 		echo
 		ok=1
 		break
 	fi
-	sleep 1
+	sleep 5
 done
 if [[ "${ok}" -ne 1 ]]; then
-	echo "Service did not become healthy on 127.0.0.1:8080" >&2
-	journalctl -u "${SERVICE}" -n 40 --no-pager >&2
+	echo "API did not become healthy on 127.0.0.1:8080" >&2
+	compose ps >&2 || true
+	compose logs --tail 80 >&2 || true
 	exit 1
 fi

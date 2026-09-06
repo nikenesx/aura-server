@@ -2,49 +2,47 @@
 
 Backend API for the Aura desktop application — processes veterinary appointment audio recordings.
 
-## Requirements
+Containers are built and run on the VPS. You do not run or build the stack on a laptop.
 
-- Go 1.26+
-
-## Quick start
+## Transcribe
 
 ```bash
-# Copy env template (optional)
-cp .env.example .env
-
-# Run the server
-make run
+curl -fsS -F file=@recording.wav https://api.aurameds.ru/v1/transcribe
 ```
 
-The server starts on `:8080` by default.
-
-## Health check
-
-```bash
-curl http://localhost:8080/health
-# {"status":"ok"}
+```json
+{
+  "text": "привет это я",
+  "phrases": [
+    {"text": "привет", "start": 1.79, "end": 2.04},
+    {"text": "это я", "start": 3.72, "end": 4.26}
+  ]
+}
 ```
+
+`POST /v1/transcribe` is synchronous: send audio (`wav`, `mp3`, `m4a`, `ogg`, `flac`, …) as multipart field `file` and wait for the JSON body. Limit is 100 MB. Without the ASR container the endpoint returns `503`.
 
 ## Configuration
 
-| Variable    | Default | Description              |
-|-------------|---------|--------------------------|
-| `HTTP_ADDR` | `:8080` | HTTP listen address      |
-| `LOG_LEVEL` | `info`  | Log level (debug/info/warn/error) |
+Server env lives in `/opt/aura-server/.env` (created from `deploy/env.example` on first install). Later deploys do not overwrite it.
 
-## Commands
-
-```bash
-make run    # start the server
-make build  # build binary to bin/api
-make test   # run tests
-make lint   # run golangci-lint (requires golangci-lint)
-make deploy # rsync sources, build on the VPS, restart systemd
-```
+| Variable           | Default                 | Description                         |
+|--------------------|-------------------------|-------------------------------------|
+| `HTTP_ADDR`        | `:8080`                 | HTTP listen address (inside Docker) |
+| `LOG_LEVEL`        | `info`                  | Log level                           |
+| `ASR_URL`          | `http://asr:8090`       | T-one service URL                   |
+| `MAX_UPLOAD_BYTES` | `104857600`             | Upload size limit                   |
+| `ASR_TIMEOUT`      | `30m`                   | Transcription timeout               |
+| `VAD_ENABLED`      | `true`                  | Skip silence with Silero VAD        |
+| `VAD_THRESHOLD`    | `0.5`                   | Speech probability cutoff (0–1)     |
+| `VAD_MIN_SPEECH_MS`| `300`                   | Drop speech shorter than this       |
+| `VAD_MIN_SILENCE_MS`| `400`                  | Silence needed to split segments    |
+| `VAD_PAD_MS`       | `300`                   | Extra audio kept around speech      |
+| `AGC_ENABLED`      | `true`                  | Boost quiet speech before T-one     |
 
 ## Production (VPS + nginx)
 
-DNS for `api.aurameds.ru` must already point at the VPS. The Go process listens on `127.0.0.1:8080`; nginx terminates HTTP/TLS and reverse-proxies to it.
+DNS for `api.aurameds.ru` must already point at the VPS. nginx terminates HTTP/TLS and proxies to the Docker API on `127.0.0.1:8080`.
 
 ### 1. SSH access
 
@@ -58,7 +56,7 @@ ssh-copy-id root@YOUR_VPS_IP
 cp deploy/deploy.env.example deploy.env
 ```
 
-Set `DEPLOY_HOST` to `api.aurameds.ru` or the VPS IP if SSH should not rely on DNS.
+Set `DEPLOY_HOST` to `api.aurameds.ru` or the VPS IP.
 
 ### 3. First deploy (and every later update)
 
@@ -67,23 +65,17 @@ Set `DEPLOY_HOST` to `api.aurameds.ru` or the VPS IP if SSH should not rely on D
 # or: make deploy
 ```
 
-The first run installs Go, nginx, certbot, a systemd unit (`aura-server` as user `aura`), and an nginx site. Later runs rsync the tree (they do not overwrite `/opt/aura-server/.env`), run `go build` on the server, and restart systemd.
-
-Production env lives at `/opt/aura-server/.env` (`HTTP_ADDR=127.0.0.1:8080`).
+The first run installs Docker, nginx, certbot, and a systemd unit that starts `docker compose`. Later runs rsync the tree (they do not overwrite `/opt/aura-server/.env`), rebuild images on the server, and restart compose. The first image build is slow because of T-one.
 
 ### 4. TLS
-
-On the VPS, after nginx is serving port 80:
 
 ```bash
 ssh root@YOUR_VPS_IP 'certbot --nginx -d api.aurameds.ru'
 ```
 
-Then:
-
 ```bash
 curl -fsS https://api.aurameds.ru/health
-# {"status":"ok"}
+curl -fsS -F file=@recording.wav https://api.aurameds.ru/v1/transcribe
 ```
 
 Do not copy `deploy/nginx.conf` over the live site after certbot — certbot amends that file. Re-running `install.sh` leaves an existing TLS site alone.
@@ -91,7 +83,8 @@ Do not copy `deploy/nginx.conf` over the live site after certbot — certbot ame
 ### Useful commands on the VPS
 
 ```bash
+docker compose -f /opt/aura-server/docker-compose.yml ps
+docker compose -f /opt/aura-server/docker-compose.yml logs -f
 systemctl status aura-server
-journalctl -u aura-server -f
 nginx -t && systemctl reload nginx
 ```
