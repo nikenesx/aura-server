@@ -2,31 +2,12 @@
 
 Backend API for the Aura desktop application — processes veterinary appointment audio recordings.
 
-## Requirements
-
-- Go 1.26+ (local development)
-- Docker and Docker Compose (API + T-one)
-
-## Quick start
-
-```bash
-cp .env.example .env
-docker compose up --build
-```
-
-The API listens on `127.0.0.1:8080`. T-one runs in a separate container; you do not install Python.
-
-```bash
-curl http://127.0.0.1:8080/health
-# {"status":"ok","asr":"ok"}
-```
-
-First start downloads the T-one image (~4 GB) and can take several minutes.
+Containers are built and run on the VPS. You do not run or build the stack on a laptop.
 
 ## Transcribe
 
 ```bash
-curl -fsS -F file=@recording.wav http://127.0.0.1:8080/v1/transcribe
+curl -fsS -F file=@recording.wav https://api.aurameds.ru/v1/transcribe
 ```
 
 ```json
@@ -43,11 +24,13 @@ curl -fsS -F file=@recording.wav http://127.0.0.1:8080/v1/transcribe
 
 ## Configuration
 
+Server env lives in `/opt/aura-server/.env` (created from `deploy/env.example` on first install). Later deploys do not overwrite it.
+
 | Variable           | Default                 | Description                         |
 |--------------------|-------------------------|-------------------------------------|
 | `HTTP_ADDR`        | `:8080`                 | HTTP listen address (inside Docker) |
 | `LOG_LEVEL`        | `info`                  | Log level                           |
-| `ASR_URL`          | `http://127.0.0.1:8090` | T-one service URL                   |
+| `ASR_URL`          | `http://asr:8090`       | T-one service URL                   |
 | `MAX_UPLOAD_BYTES` | `104857600`             | Upload size limit                   |
 | `ASR_TIMEOUT`      | `30m`                   | Transcription timeout               |
 | `VAD_ENABLED`      | `true`                  | Skip silence with Silero VAD        |
@@ -55,17 +38,6 @@ curl -fsS -F file=@recording.wav http://127.0.0.1:8080/v1/transcribe
 | `VAD_MIN_SPEECH_MS`| `300`                   | Drop speech shorter than this       |
 | `VAD_MIN_SILENCE_MS`| `400`                  | Silence needed to split segments    |
 | `VAD_PAD_MS`       | `300`                   | Extra audio kept around speech      |
-
-## Commands
-
-```bash
-make up     # docker compose up --build
-make down   # docker compose down
-make run    # Go API only (no Docker; transcribe needs ASR)
-make build  # build binary to bin/api
-make test   # run tests
-make deploy # rsync + rebuild containers on the VPS
-```
 
 ## Production (VPS + nginx)
 
