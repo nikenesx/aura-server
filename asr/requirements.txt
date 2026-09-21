@@ -1,0 +1,6 @@
+fastapi
+uvicorn[standard]
+numpy
+huggingface_hub
+pyannote.audio
+git+https://github.com/salute-developers/GigaAM.git

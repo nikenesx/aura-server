@@ -4,3 +4,6 @@
 *.exe
 .env
 deploy.env
+*.WAV
+*.wav
+.venv

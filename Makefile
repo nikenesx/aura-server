@@ -1,4 +1,4 @@
-.PHONY: run build test lint deploy
+.PHONY: run build test lint deploy docker-up docker-down
 
 run:
 	go run ./cmd/api
@@ -14,3 +14,9 @@ lint:
 
 deploy:
 	./scripts/deploy.sh
+
+docker-up:
+	docker compose up --build -d --wait --wait-timeout 900
+
+docker-down:
+	docker compose down

@@ -4,42 +4,97 @@ Backend API for the Aura desktop application — processes veterinary appointmen
 
 ## Requirements
 
-- Go 1.26+
+For Docker (recommended locally): Docker Desktop with WSL2 and an NVIDIA GPU.
+
+Without Docker: Go 1.26+, Python 3.12, ffmpeg, and a CUDA-capable PyTorch install.
 
 ## Quick start
 
-```bash
-# Copy env template (optional)
-cp .env.example .env
+Copy `.env.example` to `.env` and put `HF_TOKEN` there after accepting Hugging Face access for `pyannote/speaker-diarization-3.1` and `pyannote/segmentation-3.0`.
 
-# Run the server
-make run
+```powershell
+# Windows: Docker Desktop must be running, GPU enabled
+.\scripts\run-docker.ps1
+# .\scripts\run-docker.ps1 -Stop
 ```
 
-The server starts on `:8080` by default.
+Or:
+
+```bash
+cp .env.example .env
+docker compose up --build -d --wait
+```
+
+The API listens on `http://127.0.0.1:8080`. Go, Python, CUDA, ffmpeg, and models stay inside the images; model weights are cached in a Docker volume after the first start.
 
 ## Health check
 
 ```bash
 curl http://localhost:8080/health
-# {"status":"ok"}
+# {"status":"ok","asr":"ok"}
 ```
+
+## Transcribe
+
+Recognition is async. Docker already starts the Python ASR worker (GigaAM + pyannote) and the Go API.
+
+Without Docker, on the host GPU:
+
+```powershell
+.\scripts\setup-local-gpu.ps1
+.\scripts\run-local.ps1
+# .\scripts\run-local.ps1 -Stop
+```
+
+```bash
+curl.exe -D - -F file=@recording.wav http://127.0.0.1:8080/v1/transcribe
+# HTTP 202  {"job_id":"..."}
+
+curl.exe -fsS http://127.0.0.1:8080/v1/transcribe/JOB_ID
+```
+
+```json
+{
+  "job_id": "...",
+  "status": "done",
+  "result": {
+    "text": "что случилось с барсиком он не ест",
+    "phrases": [
+      {"text": "что случилось с барсиком", "start": 1.2, "end": 3.4, "speaker": "speaker_0"},
+      {"text": "он не ест", "start": 3.8, "end": 5.1, "speaker": "speaker_1"}
+    ]
+  }
+}
+```
+
+`status` is `queued`, `processing`, `done`, or `failed`. Jobs live in memory only.
+
+Pipeline: 16 kHz wav → pyannote (who speaks) → GigaAM on each turn (what was said). `speaker_0` is whoever spoke first.
 
 ## Configuration
 
-| Variable    | Default | Description              |
-|-------------|---------|--------------------------|
-| `HTTP_ADDR` | `:8080` | HTTP listen address      |
-| `LOG_LEVEL` | `info`  | Log level (debug/info/warn/error) |
+| Variable        | Default                         | Description                          |
+|-----------------|---------------------------------|--------------------------------------|
+| `HTTP_ADDR`     | `:8080`                         | HTTP listen address                  |
+| `LOG_LEVEL`     | `info`                          | Log level                            |
+| `ASR_URL`       | `http://127.0.0.1:8090`         | Python ASR worker                    |
+| `MAX_UPLOAD_BYTES` | `104857600`                  | Upload size limit                    |
+| `ASR_TIMEOUT`   | `30m`                           | Worker timeout                       |
+| `JOB_TTL`       | `2h`                            | In-memory job lifetime               |
+| `HF_TOKEN`      |                                 | Hugging Face token for pyannote      |
+| `GIGAAM_MODEL`  | `v3_e2e_rnnt`                   | GigaAM checkpoint                    |
+| `DIAR_SPEAKERS` | `2`                             | Expected speakers; `auto` to detect  |
 
 ## Commands
 
 ```bash
-make run    # start the server
-make build  # build binary to bin/api
-make test   # run tests
-make lint   # run golangci-lint (requires golangci-lint)
-make deploy # rsync sources, build on the VPS, restart systemd
+make run        # start the Go API on the host
+make build      # build binary to bin/api
+make test       # run tests
+make lint       # run golangci-lint (requires golangci-lint)
+make docker-up  # build and start API + ASR in Docker
+make docker-down
+make deploy     # rsync sources, build on the VPS, restart systemd
 ```
 
 ## Production (VPS + nginx)

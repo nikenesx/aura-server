@@ -8,7 +8,9 @@ import (
 
 	"github.com/nikenesx/aura-server/internal/config"
 	"github.com/nikenesx/aura-server/internal/health"
+	"github.com/nikenesx/aura-server/internal/jobs"
 	"github.com/nikenesx/aura-server/internal/server"
+	"github.com/nikenesx/aura-server/internal/transcribe"
 )
 
 func Run() error {
@@ -21,8 +23,16 @@ func Run() error {
 		return fmt.Errorf("setup logger: %w", err)
 	}
 
-	healthHandler := &health.Handler{}
-	router := server.NewRouter(healthHandler)
+	asr := transcribe.NewClient(cfg.ASRURL, cfg.ASRTimeout)
+	store := jobs.NewStore(cfg.JobTTL)
+	worker := jobs.NewWorker(store, asr)
+	worker.Start(context.Background())
+
+	healthHandler := &health.Handler{ASROK: asr.Healthy}
+	transcribeHandler := transcribe.NewHandler(cfg, store, worker, func() bool {
+		return asr.Healthy(context.Background())
+	})
+	router := server.NewRouter(healthHandler, transcribeHandler)
 	srv := server.New(cfg, router)
 
 	if err := srv.Run(context.Background()); err != nil {

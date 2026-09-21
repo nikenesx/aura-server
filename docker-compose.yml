@@ -1,0 +1,59 @@
+name: aura
+
+services:
+  asr:
+    build:
+      context: .
+      dockerfile: docker/asr.Dockerfile
+    image: aura-asr:local
+    env_file:
+      - .env
+    environment:
+      HOME: /cache
+      HF_HOME: /cache/huggingface
+      HUGGINGFACE_HUB_CACHE: /cache/huggingface
+      TORCH_HOME: /cache/torch
+      XDG_CACHE_HOME: /cache
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    gpus: all
+    init: true
+    shm_size: "2gb"
+    volumes:
+      - model-cache:/cache
+    expose:
+      - "8090"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/health', timeout=3)",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 900s
+    restart: unless-stopped
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+    image: aura-api:local
+    env_file:
+      - .env
+    environment:
+      HTTP_ADDR: ":8080"
+      ASR_URL: http://asr:8090
+    ports:
+      - "8080:8080"
+    init: true
+    depends_on:
+      asr:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  model-cache:
