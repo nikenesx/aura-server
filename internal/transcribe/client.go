@@ -80,6 +80,9 @@ func (c *Client) Transcribe(ctx context.Context, filename string, audio []byte) 
 	if err != nil {
 		return jobs.Result{}, fmt.Errorf("read asr response: %w", err)
 	}
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return jobs.Result{}, fmt.Errorf("%w: %s", jobs.ErrBusy, asrDetail(payload))
+	}
 	if resp.StatusCode != http.StatusOK {
 		return jobs.Result{}, fmt.Errorf("asr status %d: %s", resp.StatusCode, asrDetail(payload))
 	}

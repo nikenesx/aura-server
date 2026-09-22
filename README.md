@@ -69,7 +69,20 @@ curl.exe -fsS http://127.0.0.1:8080/v1/transcribe/JOB_ID
 
 `status` is `queued`, `processing`, `done`, or `failed`. Jobs live in memory only.
 
-Pipeline: 16 kHz wav → pyannote (who speaks) → GigaAM on each turn (what was said). `speaker_0` is whoever spoke first.
+Pipeline: ffmpeg decodes to 16 kHz PCM in memory → pyannote finds who speaks when → speech is cut into chunks of one speaker each (up to ~22 s, cut in pauses) → GigaAM recognises the chunks in batches with word timestamps → each word goes to the speaker whose turn overlaps it most → consecutive words of one speaker become a phrase. `speaker_0` is whoever spoke first.
+
+On an RTX 4080 a 60-minute two-speaker recording takes about 45 s (about 25 s with `DIAR_SEGMENTATION_STEP=0.2`); diarization is most of it.
+
+### Benchmark and quality
+
+```bash
+cd asr
+python bench.py recording.m4a --runs 2 --json run.json --result result.json --transcript result.txt
+python bench.py recording.m4a --tile-minutes 60   # timing only: repeats the file to 60 min
+python evaluate.py reference.json result.json     # WER, cpWER, DER against a hand-labelled reference
+```
+
+A reference is `{"segments": [{"start", "end", "speaker", "text"}]}`. Write numbers the way GigaAM does (digits), or WER counts the difference as errors.
 
 ## Configuration
 
@@ -84,6 +97,11 @@ Pipeline: 16 kHz wav → pyannote (who speaks) → GigaAM on each turn (what was
 | `HF_TOKEN`      |                                 | Hugging Face token for pyannote      |
 | `GIGAAM_MODEL`  | `v3_e2e_rnnt`                   | GigaAM checkpoint                    |
 | `DIAR_SPEAKERS` | `2`                             | Expected speakers; `auto` to detect  |
+| `DIAR_MODEL`    | `pyannote/speaker-diarization-3.1` | Diarization pipeline; `pyannote/speaker-diarization-community-1` is worth comparing on real recordings |
+| `DIAR_SEGMENTATION_STEP` | `0.1`                  | Window step as a share of the window; `0.2` is ~2x faster |
+| `DIAR_SEGMENTATION_BATCH` | from model config     | pyannote segmentation batch size     |
+| `DIAR_EMBEDDING_BATCH` | from model config        | pyannote embedding batch size; larger does not speed it up but costs VRAM |
+| `ASR_BATCH_SIZE` | `16`                           | GigaAM chunks per batch              |
 
 ## Commands
 

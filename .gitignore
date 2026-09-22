@@ -7,3 +7,4 @@ deploy.env
 *.WAV
 *.wav
 .venv
+__pycache__/

@@ -11,8 +11,8 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
 
-from audio import prepare_wav
-from pipeline import load_models, transcribe_file
+from audio import decode_pcm16
+from pipeline import load_models, transcribe_pcm
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "info").upper(),
@@ -40,12 +40,10 @@ def _load() -> None:
 
 @contextmanager
 def temp_upload(suffix: str):
+    # ffmpeg gets a real file: m4a/mp4 with the index at the end cannot be read from a pipe.
     tmp = tempfile.TemporaryDirectory(prefix="aura-asr-")
-    folder = Path(tmp.name)
-    src = folder / f"upload{suffix or '.audio'}"
-    wav = folder / "ready.wav"
     try:
-        yield src, wav
+        yield Path(tmp.name) / f"upload{suffix or '.audio'}"
     finally:
         tmp.cleanup()
 
@@ -96,7 +94,7 @@ async def transcribe(request: Request):
 
 
 def _transcribe_bytes(filename: str, suffix: str, contents: bytes) -> dict:
-    with temp_upload(suffix) as (src, wav):
+    with temp_upload(suffix) as src:
         src.write_bytes(contents)
         logger.info(
             "asr request filename=%s bytes=%d sha256=%s",
@@ -104,5 +102,5 @@ def _transcribe_bytes(filename: str, suffix: str, contents: bytes) -> dict:
             len(contents),
             hashlib.sha256(contents).hexdigest()[:12],
         )
-        prepare_wav(src, wav)
-        return transcribe_file(wav)
+        pcm = decode_pcm16(src)
+    return transcribe_pcm(pcm)
