@@ -6,9 +6,11 @@ import (
 	"log/slog"
 	"os"
 
+	"github.com/nikenesx/aura-server/internal/card"
 	"github.com/nikenesx/aura-server/internal/config"
 	"github.com/nikenesx/aura-server/internal/health"
 	"github.com/nikenesx/aura-server/internal/jobs"
+	"github.com/nikenesx/aura-server/internal/llm"
 	"github.com/nikenesx/aura-server/internal/server"
 	"github.com/nikenesx/aura-server/internal/transcribe"
 )
@@ -26,9 +28,15 @@ func Run() error {
 	asr := transcribe.NewClient(cfg.ASRURL, cfg.ASRTimeout)
 	store := jobs.NewStore(cfg.JobTTL)
 	worker := jobs.NewWorker(store, asr)
-	worker.Start(context.Background())
-
 	healthHandler := &health.Handler{ASROK: asr.Healthy}
+	if cfg.LLMURL != "" {
+		model := llm.NewClient(cfg.LLMURL, cfg.LLMModel, cfg.LLMTimeout)
+		worker.EnableCards(card.NewGenerator(model, card.VetAppointment))
+		healthHandler.LLMOK = model.Healthy
+	} else {
+		slog.Warn("LLM_URL is empty, appointment cards are disabled")
+	}
+	worker.Start(context.Background())
 	transcribeHandler := transcribe.NewHandler(cfg, store, worker, func() bool {
 		return asr.Healthy(context.Background())
 	})

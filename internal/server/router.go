@@ -18,6 +18,7 @@ func NewRouter(healthHandler *health.Handler, transcribeHandler *transcribe.Hand
 	r.Get("/health", healthHandler.ServeHTTP)
 	r.Post("/v1/transcribe", transcribeHandler.Create)
 	r.Get("/v1/transcribe/{jobID}", transcribeHandler.Get)
+	r.Get("/v1/transcribe/{jobID}/card", transcribeHandler.Card)
 
 	return r
 }

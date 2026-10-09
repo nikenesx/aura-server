@@ -8,6 +8,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/nikenesx/aura-server/internal/card"
 	"github.com/nikenesx/aura-server/internal/config"
 	"github.com/nikenesx/aura-server/internal/jobs"
 )
@@ -81,23 +82,47 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, jobView(job))
 }
 
+// Card returns the appointment card, made after the transcript is done.
+func (h *Handler) Card(w http.ResponseWriter, r *http.Request) {
+	job, ok := h.store.Get(chi.URLParam(r, "jobID"))
+	if !ok {
+		writeError(w, http.StatusNotFound, "job not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, cardViewResponse{
+		JobID:  job.ID,
+		Status: job.CardStatus,
+		Error:  job.CardError,
+		Card:   job.Card,
+	})
+}
+
 type jobViewResponse struct {
-	JobID    string       `json:"job_id"`
-	Status   jobs.Status  `json:"status"`
-	Filename string       `json:"filename,omitempty"`
-	Bytes    int          `json:"bytes,omitempty"`
-	Error    string       `json:"error,omitempty"`
-	Result   *jobs.Result `json:"result,omitempty"`
+	JobID      string       `json:"job_id"`
+	Status     jobs.Status  `json:"status"`
+	CardStatus jobs.Status  `json:"card_status"`
+	Filename   string       `json:"filename,omitempty"`
+	Bytes      int          `json:"bytes,omitempty"`
+	Error      string       `json:"error,omitempty"`
+	Result     *jobs.Result `json:"result,omitempty"`
+}
+
+type cardViewResponse struct {
+	JobID  string      `json:"job_id"`
+	Status jobs.Status `json:"status"`
+	Error  string      `json:"error,omitempty"`
+	Card   *card.Card  `json:"card,omitempty"`
 }
 
 func jobView(job *jobs.Job) jobViewResponse {
 	return jobViewResponse{
-		JobID:    job.ID,
-		Status:   job.Status,
-		Filename: job.Name,
-		Bytes:    job.Bytes,
-		Error:    job.Error,
-		Result:   job.Result,
+		JobID:      job.ID,
+		Status:     job.Status,
+		CardStatus: job.CardStatus,
+		Filename:   job.Name,
+		Bytes:      job.Bytes,
+		Error:      job.Error,
+		Result:     job.Result,
 	}
 }
 

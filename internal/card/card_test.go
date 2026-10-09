@@ -1,0 +1,279 @@
+package card
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/nikenesx/aura-server/internal/llm"
+)
+
+type fakeModel struct {
+	reply    string
+	failures int
+	err      error
+	calls    int
+	messages []llm.Message
+	schema   any
+}
+
+func (f *fakeModel) JSON(_ context.Context, messages []llm.Message, _ string, schema any, _ llm.Sampling) (json.RawMessage, error) {
+	f.calls++
+	f.messages, f.schema = messages, schema
+	if f.calls <= f.failures {
+		return nil, f.err
+	}
+	return json.RawMessage(f.reply), nil
+}
+
+var lines = []Line{
+	{Speaker: "speaker_0", Text: "Здравствуйте, что случилось с Мусей?"},
+	{Speaker: "speaker_1", Text: "Чешется и трясёт головой."},
+	{Speaker: "speaker_0", Text: "Преднизолон 5 мг, по половине таблетки через день, семь дней."},
+}
+
+const reply = `{
+	"roles": {"speaker_0": "doctor", "speaker_1": "owner"},
+	"owner_name": {"value": "Иванова Анна Сергеевна", "sources": []},
+	"pet_name": {"value": "Муся", "sources": [0]},
+	"species": {"value": "  ", "sources": [0]},
+	"age": {"value": null, "sources": []},
+	"sex": {"value": null, "sources": []},
+	"breed": {"value": null, "sources": []},
+	"weight": {"value": null, "sources": []},
+	"temperature": {"value": null, "sources": []},
+	"complaints": {"value": "Зуд, трясёт головой.", "sources": [1, 1, 9, -1]},
+	"anamnesis": {"value": null, "sources": []},
+	"examination": {"value": null, "sources": []},
+	"diagnosis": {"value": null, "sources": []},
+	"differential_diagnosis": {"value": null, "sources": []},
+	"prognosis": {"value": null, "sources": []},
+	"tests": {"value": null, "sources": []},
+	"recommendations": [
+		{"text": "Преднизолон 5 мг в табл., по 1/2 табл. внутрь через день, 7 дней.", "sources": [2]},
+		{"text": "Курс антибиотика 10 дней.", "sources": []},
+		{"text": " ", "sources": []}
+	]
+}`
+
+func newTestGenerator(m Model) *Generator {
+	g := NewGenerator(m, VetAppointment)
+	g.retryMinDelay = time.Millisecond
+	g.retryMaxDelay = time.Millisecond
+	return g
+}
+
+func field(t *testing.T, c *Card, key string) FieldValue {
+	t.Helper()
+	for _, s := range c.Sections {
+		for _, f := range s.Fields {
+			if f.Key == key {
+				return f
+			}
+		}
+	}
+	t.Fatalf("field %s missing", key)
+	return FieldValue{}
+}
+
+func TestMakeFillsTemplate(t *testing.T) {
+	m := &fakeModel{reply: reply}
+	c, err := newTestGenerator(m).Make(context.Background(), lines)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if c.Template != "vet_appointment_v1" || c.Roles["speaker_0"] != "doctor" || c.Roles["speaker_1"] != "owner" {
+		t.Fatalf("card header: %+v", c)
+	}
+	if f := field(t, c, "pet_name"); f.Value == nil || *f.Value != "Муся" {
+		t.Fatalf("pet_name: %+v", f)
+	}
+	if f := field(t, c, "species"); f.Value != nil || len(f.Sources) != 0 {
+		t.Fatalf("blank value should become null: %+v", f)
+	}
+	// A value the model cannot point at in the transcript is made up.
+	if f := field(t, c, "owner_name"); f.Value != nil {
+		t.Fatalf("uncited value should be dropped: %+v", f)
+	}
+	if f := field(t, c, "complaints"); len(f.Sources) != 1 || f.Sources[0] != 1 {
+		t.Fatalf("sources should be deduplicated and in range: %+v", f.Sources)
+	}
+	if f := field(t, c, "recommendations"); len(f.Items) != 1 || f.Items[0].Sources[0] != 2 {
+		t.Fatalf("uncited and blank items should be dropped: %+v", f.Items)
+	}
+
+	for _, want := range []string{
+		"Питомец: Муся\n",
+		"Порода: —\n",
+		"Рекомендации и назначения:\nДиагноз: —\n",
+		"Рекомендации:\n1) Преднизолон 5 мг",
+	} {
+		if !strings.Contains(c.Text, want) {
+			t.Errorf("text lacks %q:\n%s", want, c.Text)
+		}
+	}
+}
+
+// Seen from T-lite on a clip that ended before any treatment was discussed:
+// it invented a whole plan and pointed every item at one unrelated phrase.
+func TestInventedItemsWithBogusSourcesAreDropped(t *testing.T) {
+	lines := []Line{
+		{Speaker: "speaker_1", Text: "Прививки и обработки от блох не делали."},
+		{Speaker: "speaker_0", Text: "Хорошо, давайте посмотрим. Сейчас взвесим."},
+	}
+	reply := `{"roles":{"speaker_0":"doctor","speaker_1":"owner"},"recommendations":[
+		{"text":"Обработка от блох и клещей (например, фипронил-содержащий препарат)","sources":[1]},
+		{"text":"Повторный осмотр через 10–14 дней","sources":[1]}
+	]}`
+	m := &fakeModel{reply: reply}
+	c, err := newTestGenerator(m).Make(context.Background(), lines)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f := field(t, c, "recommendations"); len(f.Items) != 0 {
+		t.Fatalf("items unrelated to their sources should be dropped: %+v", f.Items)
+	}
+}
+
+func TestQuotesSource(t *testing.T) {
+	lines := []Line{
+		{Text: "Преднизолон 5 мг в таблетках, по половине таблетки внутрь через день."},
+		{Text: "Хорошо, давайте посмотрим. Сейчас взвесим."},
+	}
+	cases := []struct {
+		text    string
+		sources []int
+		want    bool
+	}{
+		{"Преднизолон 5 мг, по 1/2 таблетки внутрь через день", []int{0}, true},
+		{"Обработка помещения против блох", []int{1}, false},
+		{"Преднизолон 5 мг", []int{1, 0}, true},
+	}
+	for _, tc := range cases {
+		if got := quotesSource(tc.text, tc.sources, lines); got != tc.want {
+			t.Errorf("quotesSource(%q, %v) = %v", tc.text, tc.sources, got)
+		}
+	}
+}
+
+func TestPromptNumbersPhrasesAndListsFields(t *testing.T) {
+	m := &fakeModel{reply: reply}
+	if _, err := newTestGenerator(m).Make(context.Background(), lines); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(m.messages[1].Content, "[2] speaker_0: Преднизолон") {
+		t.Fatalf("transcript prompt:\n%s", m.messages[1].Content)
+	}
+	for _, f := range []string{"owner_name — Ф.И.О. владельца", "recommendations — Рекомендации (список"} {
+		if !strings.Contains(m.messages[0].Content, f) {
+			t.Errorf("system prompt lacks %q", f)
+		}
+	}
+}
+
+func TestSchemaCoversEveryField(t *testing.T) {
+	schema := responseSchema(VetAppointment, []string{"speaker_0", "speaker_1"})
+	required := schema["required"].([]string)
+	if required[0] != "roles" {
+		t.Fatalf("roles should come first: %v", required)
+	}
+	n := 0
+	for _, s := range VetAppointment.Sections {
+		n += len(s.Fields)
+	}
+	if len(required) != n+1 {
+		t.Fatalf("required %d keys, want %d", len(required), n+1)
+	}
+	roles := schema["properties"].(orderedProps).values["roles"].(map[string]any)
+	if got := roles["required"].([]string); len(got) != 2 {
+		t.Fatalf("roles required: %v", got)
+	}
+}
+
+// vLLM generates properties in schema order, so the serialized schema must
+// keep roles first, fields in template order, and each value before its sources.
+func TestSchemaJSONKeepsOrder(t *testing.T) {
+	raw, err := json.Marshal(responseSchema(VetAppointment, []string{"speaker_0"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(raw)
+	order := []string{`"roles"`, `"owner_name"`, `"complaints"`, `"examination"`, `"diagnosis"`, `"recommendations"`}
+	last := -1
+	for _, key := range order {
+		i := strings.Index(s, key+":")
+		if i <= last {
+			t.Fatalf("%s out of order in %s", key, s)
+		}
+		last = i
+	}
+	if strings.Index(s, `"value":`) > strings.Index(s, `"sources":`) {
+		t.Fatalf("value should precede sources: %s", s)
+	}
+	if strings.Index(s, `"text":`) > strings.LastIndex(s, `"sources":`) {
+		t.Fatalf("text should precede sources: %s", s)
+	}
+	var back map[string]any
+	if err := json.Unmarshal(raw, &back); err != nil {
+		t.Fatalf("schema is not valid JSON: %v", err)
+	}
+}
+
+func TestTemplateKeysAreUnique(t *testing.T) {
+	seen := map[string]bool{"roles": true}
+	for _, s := range VetAppointment.Sections {
+		for _, f := range s.Fields {
+			if seen[f.Key] {
+				t.Fatalf("duplicate key %s", f.Key)
+			}
+			seen[f.Key] = true
+		}
+	}
+}
+
+func TestMakeRetriesWhileUnavailable(t *testing.T) {
+	m := &fakeModel{reply: reply, failures: 2, err: llm.ErrUnavailable}
+	if _, err := newTestGenerator(m).Make(context.Background(), lines); err != nil {
+		t.Fatal(err)
+	}
+	if m.calls != 3 {
+		t.Fatalf("calls %d", m.calls)
+	}
+}
+
+func TestMakeFailsFastOnOtherErrors(t *testing.T) {
+	m := &fakeModel{failures: 5, err: errors.New("context too long")}
+	if _, err := newTestGenerator(m).Make(context.Background(), lines); err == nil || m.calls != 1 {
+		t.Fatalf("err=%v calls=%d", err, m.calls)
+	}
+}
+
+func TestEmptyTranscriptSkipsModel(t *testing.T) {
+	m := &fakeModel{}
+	c, err := newTestGenerator(m).Make(context.Background(), nil)
+	if err != nil || m.calls != 0 || !strings.Contains(c.Text, "Диагноз: —") {
+		t.Fatalf("err=%v calls=%d text=%q", err, m.calls, c.Text)
+	}
+}
+
+func TestFieldJSONShape(t *testing.T) {
+	v := "Муся"
+	plain, _ := json.Marshal(FieldValue{Key: "pet_name", Title: "Питомец", Value: &v})
+	empty, _ := json.Marshal(FieldValue{Key: "breed", Title: "Порода"})
+	list, _ := json.Marshal(FieldValue{Key: "recommendations", Title: "Рекомендации", List: true})
+
+	want := map[string]string{
+		string(plain): `{"key":"pet_name","title":"Питомец","value":"Муся","sources":[]}`,
+		string(empty): `{"key":"breed","title":"Порода","value":null,"sources":[]}`,
+		string(list):  `{"key":"recommendations","title":"Рекомендации","items":[]}`,
+	}
+	for got, w := range want {
+		if got != w {
+			t.Errorf("got %s want %s", got, w)
+		}
+	}
+}

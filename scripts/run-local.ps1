@@ -1,5 +1,8 @@
 param(
-    [switch]$Stop
+    [switch]$Stop,
+    # Also start the vLLM container for appointment cards. vLLM has no native
+    # Windows build, so it runs in Docker even in local mode.
+    [switch]$Llm
 )
 
 $ErrorActionPreference = "Stop"
@@ -7,12 +10,17 @@ $ErrorActionPreference = "Stop"
 
 if ($Stop) {
     Stop-LocalAura
+    Stop-LocalLlm
     Write-Host "local API/ASR stopped"
     return
 }
 
 Add-LocalFfmpegPath
 Import-LocalEnv
+
+if (-not $Llm -and -not $env:LLM_URL) {
+    Write-Host "cards are disabled (no LLM_URL); add -Llm to start vLLM in Docker"
+}
 
 $venvPy = Join-Path $script:RepoRoot "asr\.venv\Scripts\python.exe"
 if (-not (Test-Path $venvPy)) {
@@ -30,6 +38,12 @@ $asrWindow = Start-Process -FilePath "powershell.exe" -WorkingDirectory $script:
 $apiWindow = $null
 try {
     Wait-UrlOk -Url "http://127.0.0.1:8090/health" -Name "ASR" -TimeoutSec 600
+
+    # After ASR, as in Compose: vLLM then sizes itself around what ASR took.
+    if ($Llm) {
+        Start-LocalLlm
+        $env:LLM_URL = "http://127.0.0.1:8000"
+    }
 
     $apiWindow = Start-Process -FilePath "powershell.exe" -WorkingDirectory $script:RepoRoot -PassThru -ArgumentList @(
         "-NoExit",
@@ -58,8 +72,10 @@ Write-Host ""
 Write-Host "local stack is fresh"
 Write-Host "  API  http://127.0.0.1:8080"
 Write-Host "  ASR  http://127.0.0.1:8090"
+if ($env:LLM_URL) { Write-Host "  LLM  $($env:LLM_URL)" }
 Write-Host "Logs are in the two new PowerShell windows. Close them or run:"
 Write-Host "  .\scripts\run-local.ps1 -Stop"
 Write-Host ""
 Write-Host "curl.exe -D - -fsS -F file=@recording.wav http://127.0.0.1:8080/v1/transcribe"
 Write-Host "curl.exe -fsS http://127.0.0.1:8080/v1/transcribe/JOB_ID"
+if ($env:LLM_URL) { Write-Host "curl.exe -fsS http://127.0.0.1:8080/v1/transcribe/JOB_ID/card" }

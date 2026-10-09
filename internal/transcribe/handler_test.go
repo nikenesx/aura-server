@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/nikenesx/aura-server/internal/card"
 	"github.com/nikenesx/aura-server/internal/config"
 	"github.com/nikenesx/aura-server/internal/jobs"
 )
@@ -101,6 +102,40 @@ func TestGetMissingJob(t *testing.T) {
 	h.Get(rec, getRequest("missing"))
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status %d", rec.Code)
+	}
+}
+
+func TestCardEndpoint(t *testing.T) {
+	store := jobs.NewStore(time.Hour)
+	h := NewHandler(config.Config{}, store, jobs.NewWorker(store, fakeRunner{}), nil)
+	store.Create("j1", "a.wav", []byte("x"))
+	store.Finish("j1", jobs.Result{Text: "a"})
+	store.StartCard("j1")
+	store.FinishCard("j1", &card.Card{Template: "vet_appointment_v1", Text: "Питомец: —"})
+
+	rec := httptest.NewRecorder()
+	h.Card(rec, getRequest("j1"))
+	var got struct {
+		JobID  string     `json:"job_id"`
+		Status string     `json:"status"`
+		Card   *card.Card `json:"card"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil || rec.Code != http.StatusOK {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	if got.JobID != "j1" || got.Status != "done" || got.Card == nil || got.Card.Text != "Питомец: —" {
+		t.Fatalf("card response %+v", got)
+	}
+
+	job := getJob(t, h, "j1")
+	if job["card_status"] != "done" {
+		t.Fatalf("job card_status %v", job["card_status"])
+	}
+
+	rec = httptest.NewRecorder()
+	h.Card(rec, getRequest("missing"))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("missing job status %d", rec.Code)
 	}
 }
 

@@ -3,6 +3,8 @@ package jobs
 import (
 	"sync"
 	"time"
+
+	"github.com/nikenesx/aura-server/internal/card"
 )
 
 type Status string
@@ -12,6 +14,8 @@ const (
 	StatusProcessing Status = "processing"
 	StatusDone       Status = "done"
 	StatusFailed     Status = "failed"
+	// StatusDisabled is a card status: no LLM is configured.
+	StatusDisabled Status = "disabled"
 )
 
 type Phrase struct {
@@ -35,6 +39,11 @@ type Job struct {
 	Audio   []byte
 	Name    string
 	Bytes   int
+
+	// The appointment card is made after the transcript and tracked separately.
+	CardStatus Status
+	CardError  string
+	Card       *card.Card
 }
 
 type Store struct {
@@ -54,12 +63,13 @@ func (s *Store) Create(id, name string, audio []byte) *Job {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	job := &Job{
-		ID:      id,
-		Status:  StatusQueued,
-		Created: time.Now(),
-		Audio:   audio,
-		Name:    name,
-		Bytes:   len(audio),
+		ID:         id,
+		Status:     StatusQueued,
+		Created:    time.Now(),
+		Audio:      audio,
+		Name:       name,
+		Bytes:      len(audio),
+		CardStatus: StatusQueued,
 	}
 	s.jobs[id] = job
 	return copyJob(job)
@@ -111,6 +121,44 @@ func (s *Store) Fail(id, message string) {
 	job.Status = StatusFailed
 	job.Error = message
 	job.Audio = nil
+}
+
+// StartCard marks the card as in progress and returns the transcript to build it from.
+func (s *Store) StartCard(id string) (Result, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	job, ok := s.jobs[id]
+	if !ok || job.Result == nil {
+		return Result{}, false
+	}
+	job.CardStatus = StatusProcessing
+	return *job.Result, true
+}
+
+func (s *Store) FinishCard(id string, c *card.Card) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if job, ok := s.jobs[id]; ok {
+		job.CardStatus = StatusDone
+		job.Card = c
+	}
+}
+
+func (s *Store) FailCard(id, message string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if job, ok := s.jobs[id]; ok {
+		job.CardStatus = StatusFailed
+		job.CardError = message
+	}
+}
+
+func (s *Store) DisableCard(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if job, ok := s.jobs[id]; ok {
+		job.CardStatus = StatusDisabled
+	}
 }
 
 func (s *Store) Sweep(now time.Time) {

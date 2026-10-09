@@ -39,13 +39,13 @@ if (-not $env:HF_TOKEN -and -not $env:HUGGINGFACE_TOKEN) {
 
 Stop-LocalAura
 
-Write-Host "building and starting API + ASR in Docker"
+Write-Host "building and starting API + ASR + LLM in Docker"
 Write-Host "first run downloads CUDA/PyTorch and model weights; this can take a while"
 if ($Rebuild) {
     docker compose build --no-cache
     if ($LASTEXITCODE -ne 0) { throw "docker compose build failed" }
 }
-docker compose up --build -d --wait --wait-timeout 900
+docker compose up --build -d --wait --wait-timeout 1800
 if ($LASTEXITCODE -ne 0) { throw "docker compose up failed" }
 
 Wait-UrlOk -Url "http://127.0.0.1:8080/health" -Name "API" -TimeoutSec 60 -Ready {

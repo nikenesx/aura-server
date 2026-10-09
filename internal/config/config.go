@@ -12,6 +12,7 @@ const (
 	defaultMaxUploadBytes int64 = 100 * 1024 * 1024
 	defaultASRTimeout           = 30 * time.Minute
 	defaultJobTTL               = 2 * time.Hour
+	defaultLLMTimeout           = 5 * time.Minute
 )
 
 type Config struct {
@@ -21,6 +22,11 @@ type Config struct {
 	MaxUploadBytes int64
 	ASRTimeout     time.Duration
 	JobTTL         time.Duration
+	// LLMURL is the OpenAI-compatible server for appointment cards; empty
+	// disables cards.
+	LLMURL     string
+	LLMModel   string
+	LLMTimeout time.Duration
 }
 
 func Load() (Config, error) {
@@ -31,6 +37,17 @@ func Load() (Config, error) {
 		MaxUploadBytes: defaultMaxUploadBytes,
 		ASRTimeout:     defaultASRTimeout,
 		JobTTL:         defaultJobTTL,
+		LLMURL:         strings.TrimRight(os.Getenv("LLM_URL"), "/"),
+		LLMModel:       envOrDefault("LLM_MODEL", "t-lite"),
+		LLMTimeout:     defaultLLMTimeout,
+	}
+
+	if raw := os.Getenv("LLM_TIMEOUT"); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil || d <= 0 {
+			return Config{}, fmt.Errorf("LLM_TIMEOUT must be a positive duration")
+		}
+		cfg.LLMTimeout = d
 	}
 
 	if cfg.HTTPAddr == "" {

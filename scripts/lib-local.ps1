@@ -41,10 +41,18 @@ function Stop-ListenPort {
         }
     }
 
+    # Killing these takes Docker Desktop down with them: when a container
+    # publishes the port, it is Docker that listens on it.
+    $keep = "com.docker.backend", "com.docker.service", "wslrelay", "wslhost", "vpnkit", "Docker Desktop", "dockerd"
+
     foreach ($procId in ($pids | Select-Object -Unique)) {
         if ($procId -le 4) { continue }
         $proc = Get-Process -Id $procId -ErrorAction SilentlyContinue
         if (-not $proc) { continue }
+        if ($keep -contains $proc.ProcessName) {
+            Write-Warning "port $Port is held by Docker ($($proc.ProcessName)). Stop the container instead: docker compose down"
+            continue
+        }
         Write-Host "stopping PID $procId ($($proc.ProcessName)) on port $Port"
         Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue
     }
@@ -73,17 +81,55 @@ function Stop-LocalAura {
     Stop-ListenPort 8090
 }
 
+function Start-LocalLlm {
+    if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
+        throw "Docker is not installed, and vLLM has no native Windows build. Install Docker Desktop or run without -Llm."
+    }
+    docker info 2>$null | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Docker is not running. Start Docker Desktop and wait until it is ready." }
+
+    Write-Host "starting vLLM in Docker (first run downloads the image and the model)"
+    Set-Location $script:RepoRoot
+    # --no-deps: ASR runs on the host here, not in its container.
+    docker compose up -d --no-deps llm
+    if ($LASTEXITCODE -ne 0) { throw "docker compose up llm failed" }
+
+    # ASR and vLLM share one GPU; on 16 GB cards they do not fit together.
+    Wait-UrlOk -Url "http://127.0.0.1:8000/health" -Name "LLM" -TimeoutSec 1800 -Check {
+        $state = (docker compose ps -a --format "{{.Service}} {{.State}}" | Select-String '^llm ')
+        if ($state -and $state -match 'exited') {
+            docker compose logs --tail 20 llm
+            throw "vLLM container exited. Out of GPU memory? Lower LLM_GPU_MEMORY_UTILIZATION and LLM_MAX_MODEL_LEN in .env, or keep ASR off the GPU."
+        }
+    }
+}
+
+function Stop-LocalLlm {
+    if (-not (Get-Command docker -ErrorAction SilentlyContinue)) { return }
+    docker info 2>$null | Out-Null
+    if ($LASTEXITCODE -ne 0) { return }
+    Set-Location $script:RepoRoot
+    $running = docker compose ps --format "{{.Service}}" | Select-String '^llm$'
+    if ($running) {
+        Write-Host "stopping vLLM container"
+        docker compose stop llm | Out-Null
+    }
+}
+
 function Wait-UrlOk {
     param(
         [string]$Url,
         [string]$Name,
         [int]$TimeoutSec = 300,
-        [scriptblock]$Ready = { param($Response) $Response.StatusCode -eq 200 }
+        [scriptblock]$Ready = { param($Response) $Response.StatusCode -eq 200 },
+        # Runs on every attempt; throws when waiting further is pointless.
+        [scriptblock]$Check = $null
     )
 
     $deadline = (Get-Date).AddSeconds($TimeoutSec)
     Write-Host "waiting for $Name ($Url)"
     while ((Get-Date) -lt $deadline) {
+        if ($Check) { & $Check }
         try {
             $resp = Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 3
             if (& $Ready $resp) {

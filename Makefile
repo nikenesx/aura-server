@@ -16,7 +16,7 @@ deploy:
 	./scripts/deploy.sh
 
 docker-up:
-	docker compose up --build -d --wait --wait-timeout 900
+	docker compose up --build -d --wait --wait-timeout 1800
 
 docker-down:
 	docker compose down
