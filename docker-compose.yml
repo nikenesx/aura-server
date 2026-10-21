@@ -93,6 +93,10 @@ services:
       ASR_URL: http://asr:8090
       # The API does not wait for the LLM: cards queue until it is up.
       LLM_URL: http://llm:8000
+      DATA_DIR: /data
+    volumes:
+      # SQLite and the recordings. Losing it loses every doctor's history.
+      - api-data:/data
     ports:
       - "8080:8080"
     init: true
@@ -103,3 +107,4 @@ services:
 
 volumes:
   model-cache:
+  api-data:

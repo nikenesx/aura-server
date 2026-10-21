@@ -2,6 +2,7 @@
 package llm
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -9,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -61,7 +63,13 @@ func (c *Client) Healthy(ctx context.Context) bool {
 
 // JSON asks for a reply that matches schema and returns the raw JSON text.
 func (c *Client) JSON(ctx context.Context, messages []Message, name string, schema any, s Sampling) (json.RawMessage, error) {
-	body, err := json.Marshal(map[string]any{
+	return c.JSONStream(ctx, messages, name, schema, s, nil)
+}
+
+// JSONStream is JSON that reports how many tokens the reply has so far.
+// With a nil onToken it makes a plain, non-streaming request.
+func (c *Client) JSONStream(ctx context.Context, messages []Message, name string, schema any, s Sampling, onToken func(tokens int)) (json.RawMessage, error) {
+	request := map[string]any{
 		"model":       c.model,
 		"messages":    messages,
 		"temperature": s.Temperature,
@@ -76,7 +84,11 @@ func (c *Client) JSON(ctx context.Context, messages []Message, name string, sche
 				"strict": true,
 			},
 		},
-	})
+	}
+	if onToken != nil {
+		request["stream"] = true
+	}
+	body, err := json.Marshal(request)
 	if err != nil {
 		return nil, fmt.Errorf("encode request: %w", err)
 	}
@@ -95,17 +107,37 @@ func (c *Client) JSON(ctx context.Context, messages []Message, name string, sche
 	}
 	defer resp.Body.Close()
 
-	payload, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
-	if err != nil {
-		return nil, fmt.Errorf("read llm response: %w", err)
-	}
-	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
-		return nil, fmt.Errorf("%w: status %d: %s", ErrUnavailable, resp.StatusCode, errorDetail(payload))
-	}
 	if resp.StatusCode != http.StatusOK {
+		payload, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
+			return nil, fmt.Errorf("%w: status %d: %s", ErrUnavailable, resp.StatusCode, errorDetail(payload))
+		}
 		return nil, fmt.Errorf("llm status %d: %s", resp.StatusCode, errorDetail(payload))
 	}
 
+	var content, finish string
+	if onToken != nil {
+		content, finish, err = readStream(resp.Body, onToken)
+	} else {
+		content, finish, err = readReply(resp.Body)
+	}
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return nil, err
+	}
+	if finish == "length" {
+		return nil, fmt.Errorf("llm reply cut at %d tokens", s.MaxTokens)
+	}
+	return json.RawMessage(content), nil
+}
+
+func readReply(body io.Reader) (content, finish string, err error) {
+	payload, err := io.ReadAll(io.LimitReader(body, 4<<20))
+	if err != nil {
+		return "", "", fmt.Errorf("read llm response: %w", err)
+	}
 	var parsed struct {
 		Choices []struct {
 			Message      Message `json:"message"`
@@ -113,16 +145,62 @@ func (c *Client) JSON(ctx context.Context, messages []Message, name string, sche
 		} `json:"choices"`
 	}
 	if err := json.Unmarshal(payload, &parsed); err != nil {
-		return nil, fmt.Errorf("decode llm response: %w", err)
+		return "", "", fmt.Errorf("decode llm response: %w", err)
 	}
 	if len(parsed.Choices) == 0 {
-		return nil, errors.New("llm returned no choices")
+		return "", "", errors.New("llm returned no choices")
 	}
-	choice := parsed.Choices[0]
-	if choice.FinishReason == "length" {
-		return nil, fmt.Errorf("llm reply cut at %d tokens", s.MaxTokens)
+	return parsed.Choices[0].Message.Content, parsed.Choices[0].FinishReason, nil
+}
+
+// readStream reads server-sent events. vLLM sends about one token per event.
+func readStream(body io.Reader, onToken func(int)) (content, finish string, err error) {
+	var b strings.Builder
+	tokens := 0
+	scanner := bufio.NewScanner(body)
+	scanner.Buffer(make([]byte, 64<<10), 4<<20)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		data, ok := strings.CutPrefix(line, "data:")
+		if !ok {
+			continue
+		}
+		data = strings.TrimSpace(data)
+		if data == "[DONE]" {
+			break
+		}
+		var event struct {
+			Choices []struct {
+				Delta struct {
+					Content string `json:"content"`
+				} `json:"delta"`
+				FinishReason *string `json:"finish_reason"`
+			} `json:"choices"`
+			Error *struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal([]byte(data), &event); err != nil {
+			return "", "", fmt.Errorf("decode llm stream: %w", err)
+		}
+		if event.Error != nil {
+			return "", "", fmt.Errorf("llm stream: %s", event.Error.Message)
+		}
+		for _, ch := range event.Choices {
+			if ch.Delta.Content != "" {
+				b.WriteString(ch.Delta.Content)
+				tokens++
+				onToken(tokens)
+			}
+			if ch.FinishReason != nil {
+				finish = *ch.FinishReason
+			}
+		}
 	}
-	return json.RawMessage(choice.Message.Content), nil
+	if err := scanner.Err(); err != nil {
+		return "", "", fmt.Errorf("read llm stream: %w", err)
+	}
+	return b.String(), finish, nil
 }
 
 func errorDetail(body []byte) string {

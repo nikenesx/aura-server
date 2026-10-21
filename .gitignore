@@ -8,3 +8,4 @@ deploy.env
 *.wav
 .venv
 __pycache__/
+/data/

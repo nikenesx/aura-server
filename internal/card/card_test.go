@@ -20,7 +20,10 @@ type fakeModel struct {
 	schema   any
 }
 
-func (f *fakeModel) JSON(_ context.Context, messages []llm.Message, _ string, schema any, _ llm.Sampling) (json.RawMessage, error) {
+func (f *fakeModel) JSONStream(_ context.Context, messages []llm.Message, _ string, schema any, _ llm.Sampling, onToken func(int)) (json.RawMessage, error) {
+	for i := 1; onToken != nil && i <= 5000; i += 500 {
+		onToken(i)
+	}
 	f.calls++
 	f.messages, f.schema = messages, schema
 	if f.calls <= f.failures {
@@ -81,7 +84,7 @@ func field(t *testing.T, c *Card, key string) FieldValue {
 
 func TestMakeFillsTemplate(t *testing.T) {
 	m := &fakeModel{reply: reply}
-	c, err := newTestGenerator(m).Make(context.Background(), lines)
+	c, err := newTestGenerator(m).Make(context.Background(), lines, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,12 +133,75 @@ func TestInventedItemsWithBogusSourcesAreDropped(t *testing.T) {
 		{"text":"Повторный осмотр через 10–14 дней","sources":[1]}
 	]}`
 	m := &fakeModel{reply: reply}
-	c, err := newTestGenerator(m).Make(context.Background(), lines)
+	c, err := newTestGenerator(m).Make(context.Background(), lines, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if f := field(t, c, "recommendations"); len(f.Items) != 0 {
 		t.Fatalf("items unrelated to their sources should be dropped: %+v", f.Items)
+	}
+}
+
+// Seen from T-lite: an owner's name nobody said, cited to a greeting.
+func TestInventedNameIsDropped(t *testing.T) {
+	lines := []Line{
+		{Speaker: "speaker_0", Text: "Здравствуйте, проходите."},
+		{Speaker: "speaker_1", Text: "Кошку зовут Муся, ей девять месяцев."},
+	}
+	reply := `{"roles":{"speaker_0":"doctor","speaker_1":"owner"},
+		"owner_name":{"value":"Иванова Анна Сергеевна","sources":[0]},
+		"pet_name":{"value":"Муся","sources":[1]},
+		"age":{"value":"9 мес.","sources":[1]}}`
+	c, err := newTestGenerator(&fakeModel{reply: reply}).Make(context.Background(), lines, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f := field(t, c, "owner_name"); f.Value != nil {
+		t.Fatalf("a name never said must be dropped: %q", *f.Value)
+	}
+	if f := field(t, c, "pet_name"); f.Value == nil || *f.Value != "Муся" {
+		t.Fatalf("a name that was said must stay: %+v", f)
+	}
+	// Not a name field: the model may summarise ("девять месяцев" → "9 мес.").
+	if f := field(t, c, "age"); f.Value == nil {
+		t.Fatal("a summarised value in an ordinary field must stay")
+	}
+}
+
+// Seen from T-lite: "null" as a string instead of a JSON null.
+func TestPlaceholderValuesAreEmpty(t *testing.T) {
+	lines := []Line{{Speaker: "speaker_0", Text: "Температуру измерить не удалось."}}
+	reply := `{"temperature":{"value":"null","sources":[0]},"weight":{"value":" — ","sources":[0]},
+		"recommendations":[{"text":"null","sources":[0]}]}`
+	c, err := newTestGenerator(&fakeModel{reply: reply}).Make(context.Background(), lines, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if field(t, c, "temperature").Value != nil || field(t, c, "weight").Value != nil || len(field(t, c, "recommendations").Items) != 0 {
+		t.Fatalf("placeholders must become empty:\n%s", c.Text)
+	}
+	if strings.Contains(c.Text, "null") {
+		t.Fatalf("text shows a placeholder:\n%s", c.Text)
+	}
+}
+
+func TestWordsInSources(t *testing.T) {
+	lines := []Line{{Text: "Здравствуйте, что случилось с Мусей?"}, {Text: "Иванова Анна Петровна, хозяйка."}}
+	cases := []struct {
+		text string
+		src  []int
+		want bool
+	}{
+		{"Муся", []int{0}, true},
+		{"Иванова Анна Петровна", []int{1}, true},
+		{"Ивановой Анне", []int{1}, true},
+		{"Иванова Анна Сергеевна", []int{1}, false},
+		{"Смирнова", []int{0, 1}, false},
+	}
+	for _, c := range cases {
+		if got := wordsInSources(c.text, c.src, lines); got != c.want {
+			t.Errorf("wordsInSources(%q, %v) = %v", c.text, c.src, got)
+		}
 	}
 }
 
@@ -162,7 +228,7 @@ func TestQuotesSource(t *testing.T) {
 
 func TestPromptNumbersPhrasesAndListsFields(t *testing.T) {
 	m := &fakeModel{reply: reply}
-	if _, err := newTestGenerator(m).Make(context.Background(), lines); err != nil {
+	if _, err := newTestGenerator(m).Make(context.Background(), lines, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(m.messages[1].Content, "[2] speaker_0: Преднизолон") {
@@ -176,7 +242,7 @@ func TestPromptNumbersPhrasesAndListsFields(t *testing.T) {
 }
 
 func TestSchemaCoversEveryField(t *testing.T) {
-	schema := responseSchema(VetAppointment, []string{"speaker_0", "speaker_1"})
+	schema := responseSchema(VetAppointment, []string{"speaker_0", "speaker_1"}, nil)
 	required := schema["required"].([]string)
 	if required[0] != "roles" {
 		t.Fatalf("roles should come first: %v", required)
@@ -197,7 +263,7 @@ func TestSchemaCoversEveryField(t *testing.T) {
 // vLLM generates properties in schema order, so the serialized schema must
 // keep roles first, fields in template order, and each value before its sources.
 func TestSchemaJSONKeepsOrder(t *testing.T) {
-	raw, err := json.Marshal(responseSchema(VetAppointment, []string{"speaker_0"}))
+	raw, err := json.Marshal(responseSchema(VetAppointment, []string{"speaker_0"}, nil))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -237,7 +303,7 @@ func TestTemplateKeysAreUnique(t *testing.T) {
 
 func TestMakeRetriesWhileUnavailable(t *testing.T) {
 	m := &fakeModel{reply: reply, failures: 2, err: llm.ErrUnavailable}
-	if _, err := newTestGenerator(m).Make(context.Background(), lines); err != nil {
+	if _, err := newTestGenerator(m).Make(context.Background(), lines, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if m.calls != 3 {
@@ -247,14 +313,14 @@ func TestMakeRetriesWhileUnavailable(t *testing.T) {
 
 func TestMakeFailsFastOnOtherErrors(t *testing.T) {
 	m := &fakeModel{failures: 5, err: errors.New("context too long")}
-	if _, err := newTestGenerator(m).Make(context.Background(), lines); err == nil || m.calls != 1 {
+	if _, err := newTestGenerator(m).Make(context.Background(), lines, nil, nil); err == nil || m.calls != 1 {
 		t.Fatalf("err=%v calls=%d", err, m.calls)
 	}
 }
 
 func TestEmptyTranscriptSkipsModel(t *testing.T) {
 	m := &fakeModel{}
-	c, err := newTestGenerator(m).Make(context.Background(), nil)
+	c, err := newTestGenerator(m).Make(context.Background(), nil, nil, nil)
 	if err != nil || m.calls != 0 || !strings.Contains(c.Text, "Диагноз: —") {
 		t.Fatalf("err=%v calls=%d text=%q", err, m.calls, c.Text)
 	}
@@ -275,5 +341,82 @@ func TestFieldJSONShape(t *testing.T) {
 		if got != w {
 			t.Errorf("got %s want %s", got, w)
 		}
+	}
+}
+
+func TestKnownRolesAreFixedInSchema(t *testing.T) {
+	m := &fakeModel{reply: reply}
+	roles := map[string]string{"speaker_0": RoleDoctor}
+	if _, err := newTestGenerator(m).Make(context.Background(), lines, roles, nil); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(m.schema)
+	var schema struct {
+		Properties struct {
+			Roles struct {
+				Properties map[string]struct {
+					Enum []string `json:"enum"`
+				} `json:"properties"`
+			} `json:"roles"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(raw, &schema); err != nil {
+		t.Fatal(err)
+	}
+	got := schema.Properties.Roles.Properties
+	if e := got["speaker_0"].Enum; len(e) != 1 || e[0] != RoleDoctor {
+		t.Fatalf("known role should be the only choice: %v", e)
+	}
+	if e := got["speaker_1"].Enum; len(e) != 3 {
+		t.Fatalf("unknown speaker should keep every choice: %v", e)
+	}
+	if !strings.Contains(m.messages[1].Content, "speaker_0 — врач") {
+		t.Fatalf("prompt should state the known roles:\n%s", m.messages[1].Content)
+	}
+}
+
+func TestCardProgressStaysBelowDone(t *testing.T) {
+	m := &fakeModel{reply: reply}
+	var seen []float64
+	if _, err := newTestGenerator(m).Make(context.Background(), lines, nil, func(f float64) { seen = append(seen, f) }); err != nil {
+		t.Fatal(err)
+	}
+	if len(seen) == 0 {
+		t.Fatal("no progress reported")
+	}
+	for i, f := range seen {
+		if f > 0.95 || (i > 0 && f < seen[i-1]) {
+			t.Fatalf("progress must grow and stay under 0.95: %v", seen)
+		}
+	}
+}
+
+func TestRoles(t *testing.T) {
+	m := &fakeModel{reply: `{"speaker_0":"doctor","speaker_1":"owner","speaker_2":"boss"}`}
+	three := append(lines, Line{Speaker: "speaker_2", Text: "Здравствуйте"})
+	roles, err := newTestGenerator(m).Roles(context.Background(), three)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if roles["speaker_0"] != RoleDoctor || roles["speaker_1"] != RoleOwner {
+		t.Fatalf("roles: %v", roles)
+	}
+	if _, ok := roles["speaker_2"]; ok {
+		t.Fatalf("an unknown role must be dropped: %v", roles)
+	}
+}
+
+func TestRolesExcerptKeepsLateSpeakers(t *testing.T) {
+	var many []Line
+	for i := 0; i < 100; i++ {
+		many = append(many, Line{Speaker: "speaker_0", Text: "врач"})
+	}
+	many = append(many, Line{Speaker: "speaker_1", Text: "поздний владелец"})
+	got := rolesLines(many)
+	if n := strings.Count(got, "\n["); n > rolesExcerpt+1 {
+		t.Fatalf("excerpt too long: %d lines", n)
+	}
+	if !strings.Contains(got, "[100] speaker_1: поздний владелец") || !strings.Contains(got, "...") {
+		t.Fatalf("late speaker missing:\n%s", got)
 	}
 }

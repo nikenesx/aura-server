@@ -68,3 +68,39 @@ func TestJSONUnreachableIsUnavailable(t *testing.T) {
 		t.Fatalf("err=%v", err)
 	}
 }
+
+func TestJSONStreamCountsTokens(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if req["stream"] != true {
+			t.Errorf("stream flag missing: %v", req)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, piece := range []string{`{\"a\"`, `:1`, `}`} {
+			_, _ = w.Write([]byte(`data: {"choices":[{"delta":{"content":"` + piece + `"},"finish_reason":null}]}` + "\n\n"))
+		}
+		_, _ = w.Write([]byte(`data: {"choices":[{"delta":{},"finish_reason":"stop"}]}` + "\n\ndata: [DONE]\n\n"))
+	}))
+	t.Cleanup(srv.Close)
+
+	var counts []int
+	raw, err := NewClient(srv.URL, "m", time.Minute).JSONStream(context.Background(), nil, "card", nil, Sampling{}, func(n int) { counts = append(counts, n) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != `{"a":1}` || len(counts) != 3 || counts[2] != 3 {
+		t.Fatalf("raw=%s counts=%v", raw, counts)
+	}
+}
+
+func TestJSONStreamCutOff(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`data: {"choices":[{"delta":{"content":"{"},"finish_reason":"length"}]}` + "\n\ndata: [DONE]\n\n"))
+	}))
+	t.Cleanup(srv.Close)
+	_, err := NewClient(srv.URL, "m", time.Minute).JSONStream(context.Background(), nil, "card", nil, Sampling{MaxTokens: 1}, func(int) {})
+	if err == nil {
+		t.Fatal("a reply cut at max_tokens must fail")
+	}
+}

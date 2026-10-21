@@ -43,7 +43,13 @@ func TestLiveCard(t *testing.T) {
 
 	model := llm.NewClient(url, envOr("AURA_LLM_MODEL", "t-lite"), 10*time.Minute)
 	started := time.Now()
-	c, err := NewGenerator(model, VetAppointment).Make(context.Background(), lines)
+	g := NewGenerator(model, VetAppointment)
+	roles, err := g.Roles(context.Background(), lines)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("roles in %.1fs: %v", time.Since(started).Seconds(), roles)
+	c, err := g.Make(context.Background(), lines, roles, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

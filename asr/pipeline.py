@@ -7,7 +7,8 @@ import time
 import numpy as np
 import numpy.typing as npt
 
-from audio import SAMPLE_RATE, pcm_to_float
+from audio import SAMPLE_RATE, pcm_to_float, waveform_peaks
+from progress import Progress
 from segments import (
     Word,
     assign_speakers,
@@ -22,6 +23,8 @@ logger = logging.getLogger("aura-asr")
 
 diarization = None
 asr_model = None
+# One transcription runs at a time (app.process_lock), so one tracker will do.
+progress = Progress()
 
 MIN_CHUNK_SAMPLES = SAMPLE_RATE // 10
 
@@ -98,6 +101,7 @@ def _recognize(
     spans.sort(key=lambda span: span[0] - span[1])
 
     words: list[Word] = []
+    progress.stage("recognition")
     with torch.inference_mode():
         for k in range(0, len(spans), batch_size):
             batch = spans[k : k + batch_size]
@@ -108,6 +112,7 @@ def _recognize(
             for (a, _), (_, found) in zip(batch, decoded):
                 offset = a / SAMPLE_RATE
                 words.extend(Word(offset + w.start, offset + w.end, w.text) for w in found or [])
+            progress.stage("recognition", (k + len(batch)) / len(spans))
     words.sort(key=lambda w: w.start)
     return words
 
@@ -129,11 +134,14 @@ def transcribe_pcm(pcm: npt.NDArray[np.int16], metrics: dict | None = None) -> d
     wav = pcm_to_float(pcm)
 
     _reset_peak()
+    progress.stage("segmentation")
     output = diarization(
         {"waveform": torch.from_numpy(wav).unsqueeze(0), "sample_rate": SAMPLE_RATE, "uri": "audio"},
+        hook=progress.diarization_hook(),
         **kwargs,
     )
     turns = turns_from_output(output)
+    progress.stage("clustering", 1.0)
     diar_seconds = time.perf_counter() - started
     diar_peak = _peak_mib()
     chunks = speech_chunks(turns, frame_energy(pcm, SAMPLE_RATE), duration)
@@ -176,4 +184,9 @@ def transcribe_pcm(pcm: npt.NDArray[np.int16], metrics: dict | None = None) -> d
             asr_chunks=len(chunks),
             phrases=len(items),
         )
-    return {"text": " ".join(item["text"] for item in items), "phrases": items}
+    return {
+        "text": " ".join(item["text"] for item in items),
+        "phrases": items,
+        "duration": round(duration, 3),
+        "waveform": waveform_peaks(pcm),
+    }

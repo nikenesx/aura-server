@@ -12,6 +12,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, Request
 
 from audio import decode_pcm16
+import pipeline
 from pipeline import load_models, transcribe_pcm
 
 logging.basicConfig(
@@ -67,6 +68,13 @@ def health():
     return {"status": "ok"}
 
 
+@app.get("/progress")
+def progress():
+    """How far the transcription in flight has got. Polled by the API while it
+    waits; answered from the event loop while the work runs in a thread."""
+    return pipeline.progress.snapshot()
+
+
 @app.post("/transcribe")
 async def transcribe(request: Request):
     if load_error:
@@ -82,6 +90,7 @@ async def transcribe(request: Request):
 
     if not process_lock.acquire(blocking=False):
         raise HTTPException(status_code=429, detail="asr is busy")
+    pipeline.progress.start()
     try:
         return await asyncio.to_thread(_transcribe_bytes, filename, suffix, contents)
     except HTTPException:
@@ -90,6 +99,7 @@ async def transcribe(request: Request):
         logger.exception("transcription failed")
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     finally:
+        pipeline.progress.finish()
         process_lock.release()
 
 

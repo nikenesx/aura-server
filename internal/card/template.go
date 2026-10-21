@@ -21,6 +21,9 @@ type Field struct {
 	Hint string
 	// List fields hold numbered items, like prescriptions.
 	List bool
+	// Verbatim fields are names: every word must have been said in the cited
+	// phrases. Other fields may be the model's summary of what was said.
+	Verbatim bool
 }
 
 // VetAppointment follows the clinic's printed card: patient header,
@@ -30,8 +33,8 @@ var VetAppointment = Template{
 	Sections: []Section{
 		{
 			Fields: []Field{
-				{Key: "owner_name", Title: "Ф.И.О. владельца", Hint: "Фамилия, имя и отчество владельца животного."},
-				{Key: "pet_name", Title: "Питомец", Hint: "Кличка животного."},
+				{Key: "owner_name", Title: "Ф.И.О. владельца", Hint: "Фамилия, имя и отчество владельца животного, если их назвали.", Verbatim: true},
+				{Key: "pet_name", Title: "Питомец", Hint: "Кличка животного.", Verbatim: true},
 				{Key: "species", Title: "Вид животного", Hint: "Кошка, собака, кролик и т. п."},
 				{Key: "age", Title: "Возраст", Hint: "Как назван: «9 мес.», «5 лет»."},
 				{Key: "sex", Title: "Пол", Hint: "«Ж» или «М»; кастрация или стерилизация, если сказано."},

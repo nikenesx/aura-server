@@ -1,7 +1,6 @@
 package transcribe
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -62,8 +61,11 @@ func (c *Client) probe(ctx context.Context) bool {
 	return resp.StatusCode == http.StatusOK
 }
 
-func (c *Client) Transcribe(ctx context.Context, filename string, audio []byte) (jobs.Result, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/transcribe", bytes.NewReader(audio))
+// Transcribe streams the recording to the ASR service. An unreachable or busy
+// service returns jobs.ErrBusy, so the worker waits for it instead of failing
+// the appointment while ASR restarts.
+func (c *Client) Transcribe(ctx context.Context, filename string, body io.Reader) (jobs.Result, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/transcribe", body)
 	if err != nil {
 		return jobs.Result{}, fmt.Errorf("create request: %w", err)
 	}
@@ -72,11 +74,14 @@ func (c *Client) Transcribe(ctx context.Context, filename string, audio []byte) 
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return jobs.Result{}, fmt.Errorf("call asr: %w", err)
+		if ctx.Err() != nil {
+			return jobs.Result{}, ctx.Err()
+		}
+		return jobs.Result{}, fmt.Errorf("%w: call asr: %v", jobs.ErrBusy, err)
 	}
 	defer resp.Body.Close()
 
-	payload, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
+	payload, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
 	if err != nil {
 		return jobs.Result{}, fmt.Errorf("read asr response: %w", err)
 	}
@@ -95,6 +100,33 @@ func (c *Client) Transcribe(ctx context.Context, filename string, audio []byte) 
 		result.Phrases = []jobs.Phrase{}
 	}
 	return result, nil
+}
+
+// Progress is how far the ASR service has got with the recording in flight,
+// 0..1. active is false when it is not transcribing anything.
+func (c *Client) Progress(ctx context.Context) (fraction float64, active bool, err error) {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/progress", nil)
+	if err != nil {
+		return 0, false, err
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return 0, false, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 0, false, fmt.Errorf("asr progress status %d", resp.StatusCode)
+	}
+	var body struct {
+		Active   bool    `json:"active"`
+		Fraction float64 `json:"fraction"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<10)).Decode(&body); err != nil {
+		return 0, false, err
+	}
+	return body.Fraction, body.Active, nil
 }
 
 func asrDetail(body []byte) string {

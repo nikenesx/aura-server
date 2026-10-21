@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -40,7 +41,14 @@ func TestTranscribeBusyIsErrBusy(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	_, err := NewClient(srv.URL, time.Minute).Transcribe(context.Background(), "a.wav", []byte("x"))
+	_, err := NewClient(srv.URL, time.Minute).Transcribe(context.Background(), "a.wav", strings.NewReader("x"))
+	if !errors.Is(err, jobs.ErrBusy) {
+		t.Fatalf("want ErrBusy, got %v", err)
+	}
+}
+
+func TestTranscribeUnreachableIsErrBusy(t *testing.T) {
+	_, err := NewClient("http://127.0.0.1:1", time.Second).Transcribe(context.Background(), "a.wav", strings.NewReader("x"))
 	if !errors.Is(err, jobs.ErrBusy) {
 		t.Fatalf("want ErrBusy, got %v", err)
 	}
